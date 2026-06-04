@@ -1227,160 +1227,101 @@ export default function App() {
     }
   };
 
-  const handleQuickStopSearch = (categoryName: string) => {
+  const handleQuickStopSearch = async (categoryName: string) => {
     fireAssistantEvent('PLACES_SEARCH_STARTED');
     
     // Auto-activate voice engine to enable hands-free listening and real-time response
     setIsVoiceEngineActivated(true);
     isVoiceEngineActivatedRef.current = true;
     
-    // Support simulated coordinates or device GPS
-    const proceedWithSearch = () => {
-      // 11 highly specific real-world locations near Truro/Onslow/Halifax, Nova Scotia mapping to real-world Places categories.
-      const database: Record<string, Array<{ name: string; distance: number; query: string }>> = {
-        'Coffee': [
-          { name: "Tim Hortons Cafe", distance: 1.2, query: "Tim Hortons, Truro, Nova Scotia" },
-          { name: "Starbucks Coffee Shop", distance: 2.8, query: "Starbucks, Truro, Nova Scotia" },
-          { name: "Clay Café Bistro", distance: 3.5, query: "Clay Café, Truro, Nova Scotia" }
-        ],
-        'Gas': [
-          { name: "Esso Station and Convenience Go-Store", distance: 0.8, query: "Esso Gas Station, Truro, Nova Scotia" },
-          { name: "Shell Station Fuel Stop", distance: 2.4, query: "Shell Gas Station, Truro, Nova Scotia" },
-          { name: "Petro-Canada Station", distance: 4.1, query: "Petro-Canada Gas, Truro, Nova Scotia" }
-        ],
-        'Thrift Store': [
-          { name: "Guy's Frenchys Thrift Shop", distance: 2.9, query: "Guys Frenchys, Truro, Nova Scotia" },
-          { name: "Mission Thrift Store Charity Shop", distance: 4.2, query: "Mission Thrift Store, Truro, Nova Scotia" },
-          { name: "Bible Hill Community Charity Thrift", distance: 5.8, query: "Bible Hill Thrift, Nova Scotia" }
-        ],
-        'Grocery': [
-          { name: "Sobeys Food Market", distance: 1.4, query: "Sobeys, Truro, Nova Scotia" },
-          { name: "Atlantic Superstore Supermarket", distance: 3.1, query: "Atlantic Superstore, Truro, Nova Scotia" },
-          { name: "Bible Hill Foodland Grocer", distance: 4.7, query: "Bible Hill Foodland, Nova Scotia" }
-        ],
-        'Food': [
-          { name: "Wooden Hog Roadside Diner", distance: 1.5, query: "Wooden Hog Diner, Truro, Nova Scotia" },
-          { name: "Boston Pizza Family Restaurant", distance: 3.4, query: "Boston Pizza, Truro, Nova Scotia" },
-          { name: "McDonald's Family Restaurant", distance: 5.6, query: "McDonalds, Truro, Nova Scotia" }
-        ],
-        'Hiking': [
-          { name: "Rogart Mountain Hiking Trail", distance: 8.4, query: "Rogart Mountain Hiking Trail, Earltown, Nova Scotia" },
-          { name: "Gully Lake Wilderness Hiking Area", distance: 12.0, query: "Gully Lake Wilderness Hiking Area, Kemptown, Nova Scotia" }
-        ],
-        'Trail / Walking Trail': [
-          { name: "Victoria Park Easy Walking Trail", distance: 2.1, query: "Victoria Park, Truro, Nova Scotia" },
-          { name: "Cobequid Walkway Paved Trail", distance: 3.6, query: "Cobequid Trail, Bible Hill, Nova Scotia" }
-        ],
-        'Pharmacy': [
-          { name: "Shoppers Drug Mart Pharmacy", distance: 1.2, query: "Shoppers Drug Mart, Truro, Nova Scotia" },
-          { name: "Lawtons Drugs and Pharmacy", distance: 2.6, query: "Lawtons Drugs, Truro, Nova Scotia" }
-        ],
-        'Rest Stop': [
-          { name: "Cobequid Pass Highway Rest Stop", distance: 5.5, query: "Cobequid Pass Highway 104, Nova Scotia" },
-          { name: "Mount Thom Scenic Rest Stop", distance: 11.2, query: "Mount Thom Highway Rest Stop, Nova Scotia" }
-        ],
-        'Hospital': [
-          { name: "Colchester East Hants Health Centre Emergency Room", distance: 4.5, query: "Colchester East Hants Health Centre, Truro, Nova Scotia" }
-        ],
-        'Beach': [
-          { name: "Melmerby Beach Provincial Park", distance: 22.0, query: "Melmerby Beach Provincial Park, Nova Scotia" },
-          { name: "Lismore Public Beach", distance: 28.5, query: "Lismore Beach, Nova Scotia" }
-        ]
-      };
-
-      const categoryLower = categoryName.toLowerCase().trim();
-      let matchedKey = '';
-
-      if (categoryLower.includes('coffee') || categoryLower.includes('café') || categoryLower.includes('cafe') || categoryLower.includes('caffeine')) {
-        matchedKey = 'Coffee';
-      } else if (categoryLower.includes('gas') || categoryLower.includes('fuel') || categoryLower.includes('refuel') || categoryLower.includes('station')) {
-        matchedKey = 'Gas';
-      } else if (categoryLower.includes('thrift') || categoryLower.includes('second-hand') || categoryLower.includes('second hand') || categoryLower.includes('vintage') || categoryLower.includes('consignment') || categoryLower.includes('charity')) {
-        matchedKey = 'Thrift Store';
-      } else if (categoryLower.includes('grocery') || categoryLower.includes('supermarket') || categoryLower.includes('grocery store') || categoryLower.includes('market')) {
-        matchedKey = 'Grocery';
-      } else if (categoryLower.includes('food') || categoryLower.includes('restaurant') || categoryLower.includes('eat') || categoryLower.includes('dining') || categoryLower.includes('diner') || categoryLower.includes('lunch') || categoryLower.includes('dinner') || categoryLower.includes('fast food')) {
-        matchedKey = 'Food';
-      } else if (categoryLower.includes('hiking') || categoryLower.includes('hike') || categoryLower.includes('mountain')) {
-        matchedKey = 'Hiking';
-      } else if (categoryLower.includes('walking') || categoryLower.includes('walkway') || categoryLower.includes('boardwalk') || categoryLower.includes('trail') || categoryLower.includes('walk')) {
-        if (categoryLower.includes('hiking') || categoryLower.includes('hike') || categoryLower.includes('mountain')) {
-          matchedKey = 'Hiking';
-        } else {
-          matchedKey = 'Trail / Walking Trail';
-        }
-      } else if (categoryLower.includes('pharmacy') || categoryLower.includes('drug') || categoryLower.includes('prescription') || categoryLower.includes('chemist')) {
-        matchedKey = 'Pharmacy';
-      } else if (categoryLower.includes('rest stop') || categoryLower.includes('rest area') || categoryLower.includes('parking') || categoryLower.includes('pit stop')) {
-        matchedKey = 'Rest Stop';
-      } else if (categoryLower.includes('hospital') || categoryLower.includes('emergency') || categoryLower.includes('medical') || categoryLower.includes('clinic')) {
-        matchedKey = 'Hospital';
-      } else if (categoryLower.includes('beach') || categoryLower.includes('shore') || categoryLower.includes('cove')) {
-        matchedKey = 'Beach';
+    let lat: number | null = null;
+    let lng: number | null = null;
+    
+    try {
+      if (navigator.geolocation) {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 8000 });
+        });
+        lat = pos.coords.latitude;
+        lng = pos.coords.longitude;
+        fireAssistantEvent('GPS_LOCATION_ACQUIRED');
+      } else {
+        fireAssistantEvent('ERROR_LOCATION_UNAVAILABLE');
       }
+    } catch (err) {
+      console.warn("Geolocation in handleQuickStopSearch failed:", err);
+      // Fallback: Onslow Mountain, NS coordinates as failsafe
+      lat = 45.4167;
+      lng = -63.2667;
+    }
 
-      if (!matchedKey || !database[matchedKey]) {
-        fireAssistantEvent('PLACES_RESULTS_RECEIVED');
-        const fallbackText = "I couldn't find any nearby options.";
-        speakText(fallbackText);
-        setSpeechFeedback(fallbackText);
-        return;
-      }
-
-      // Filter out declined locations
-      const allResults = database[matchedKey];
-      const results = allResults.filter(r => !declinedLocations.includes(r.name));
-
-      if (results.length === 0) {
-        fireAssistantEvent('PLACES_RESULTS_RECEIVED');
-        const fallbackText = `I found other ${matchedKey} options, but Susan already said "No thanks" to them. Shall we look for something else?`;
-        speakText(fallbackText);
-        setSpeechFeedback(fallbackText);
-        return;
-      }
-
-      fireAssistantEvent('PLACES_RESULTS_RECEIVED');
-      
-      const firstResult = results[0];
-      setQuickStopState({
-        active: true,
-        category: matchedKey,
-        results,
-        index: 0
+    setIsTyping(true);
+    transitionToState('processing');
+    
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: `Find nearby ${categoryName}`,
+          activePartner: activeUser,
+          latitude: lat,
+          longitude: lng,
+          DRIVING_MODE: activeScreen === 'drive' ? "TRUE" : "FALSE",
+          VOICE_ASSISTANCE_MODE: profile.settings.voiceAssistanceMode || 'drive',
+        })
       });
-      
-      fireAssistantEvent('PLACE_SELECTED');
-      
-      const distanceStr = firstResult.distance.toFixed(1);
-      const speakTextStr = `I found ${firstResult.name} ${distanceStr} kilometres away. Would you like me to navigate there?`;
-      
-      lastSuggestedLocationRef.current = {
-        name: firstResult.name,
-        query: firstResult.query,
-        info: speakTextStr
-      };
 
-      hasAskedNavigationQuestionRef.current = true;
-      isFollowUpRef.current = true;
-      
-      speakText(speakTextStr, undefined, 'listening');
-      setSpeechFeedback(speakTextStr);
-    };
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        () => {
-          fireAssistantEvent('GPS_LOCATION_ACQUIRED');
-          proceedWithSearch();
-        },
-        () => {
-          fireAssistantEvent('GPS_LOCATION_ACQUIRED');
-          proceedWithSearch();
-        }
-      );
-    } else {
-      fireAssistantEvent('ERROR_LOCATION_UNAVAILABLE');
-      speakText("I can't access your location right now.");
+      const data = await response.json();
+      setIsTyping(false);
+
+      if (data.places && data.places.length > 0) {
+        const mappedResults = data.places.map((p: any) => ({
+          name: p.place_name,
+          distance: p.distance_km,
+          query: p.address || p.place_name,
+          lat: p.lat,
+          lng: p.lng,
+          address: p.address
+        }));
+
+        setQuickStopState({
+          active: true,
+          category: categoryName,
+          results: mappedResults,
+          index: 0
+        });
+
+        fireAssistantEvent('PLACE_SELECTED');
+
+        const firstResult = mappedResults[0];
+        const speakTextStr = data.text || `I found ${firstResult.name} ${firstResult.distance.toFixed(1)} kilometres away. Would you like me to navigate there?`;
+
+        lastSuggestedLocationRef.current = {
+          name: firstResult.name,
+          query: firstResult.query,
+          info: speakTextStr
+        };
+
+        hasAskedNavigationQuestionRef.current = true;
+        isFollowUpRef.current = true;
+
+        speakText(speakTextStr, undefined, 'listening');
+        setSpeechFeedback(speakTextStr);
+      } else {
+        fireAssistantEvent('PLACES_RESULTS_RECEIVED');
+        const fallbackText = data.text || `I checked near your location but couldn't find any nearby ${categoryName}.`;
+        speakText(fallbackText);
+        setSpeechFeedback(fallbackText);
+      }
+    } catch (apiError) {
+      console.error("Quick stop search backend call error:", apiError);
+      setIsTyping(false);
+      speakText("I am having trouble connecting to the travel assistant database right now.");
     }
   };
 
@@ -3184,6 +3125,21 @@ export default function App() {
         ).join(', ')
       } : null;
 
+      // Get accurate current position from browser geolocation
+      let lat: number | null = null;
+      let lng: number | null = null;
+      try {
+        if (navigator.geolocation) {
+          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 4000 });
+          });
+          lat = pos.coords.latitude;
+          lng = pos.coords.longitude;
+        }
+      } catch (geoErr) {
+        console.warn("Navigator geolocation turned off or refused:", geoErr);
+      }
+
       console.log(`[VOICE_PIPELINE] API Dispatch: "${query}" (User: ${activeUser})`);
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -3191,6 +3147,8 @@ export default function App() {
         body: JSON.stringify({
           message: query,
           activePartner: activeUser,
+          latitude: lat,
+          longitude: lng,
           destination,
           tripContext: tripContextInfo,
           history: currentMsgs.slice(-15).map(m => ({ sender: m.senderName, text: m.content })), // Increased context
@@ -3205,68 +3163,50 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
       setIsTyping(false);
-      
-      if (data.apiKeyExpired || data.apiKeyMissing) {
-        setIsApiKeyExpiredAlert(true);
-        setApiKeyErrorMessage(data.errorDetails || "Your Gemini API Key appears to have expired or is missing in the platform workspace configuration.");
-      } else {
-        setIsApiKeyExpiredAlert(false);
-      }
+      setIsApiKeyExpiredAlert(false);
 
       const textReply = data.text || "I am reflecting on our plans.";
       console.log(`AI_RESPONSE_RAW: "${textReply.substring(0, 100)}..."`);
       setDebugLatestAIResponse(textReply);
 
-      // Parse route-aware POIs if present
-      const replyLower = textReply.toLowerCase();
-      if (replyLower.includes("closest on your route:")) {
-        try {
-          const lines = textReply.split("\n");
-          let closestName = "";
-          let closestDetour = "0";
-          let nextClosestName = "";
-          let otherOptionsNames: string[] = [];
+      // Trigger interactive quick-stop map card if backend returned genuine nearby places
+      if (data.places && data.places.length > 0) {
+        const mappedResults = data.places.map((p: any) => ({
+          name: p.place_name,
+          distance: p.distance_km,
+          query: p.address || p.place_name,
+          lat: p.lat,
+          lng: p.lng,
+          address: p.address
+        }));
 
-          for (const line of lines) {
-            const cleanLine = line.trim();
-            const cleanLineLower = cleanLine.toLowerCase();
-            if (cleanLineLower.startsWith("closest on your route:")) {
-              const content = cleanLine.split(/closest on your route:/i)[1].trim();
-              closestName = content;
-              const detourMatch = content.match(/\((\d+)\s*min\s*detour\)/i);
-              if (detourMatch) {
-                closestDetour = detourMatch[1];
-                closestName = content.replace(/\(\d+\s*min\s*detour\)/i, '').trim();
-              }
-              closestName = closestName.replace(/\(directly.*?\)/gi, '').trim();
-            } else if (cleanLineLower.startsWith("next closest:")) {
-              nextClosestName = cleanLine.split(/next closest:/i)[1].trim();
-              nextClosestName = nextClosestName.replace(/\(directly.*?\)/gi, '').trim();
-            } else if (cleanLineLower.startsWith("other options:")) {
-              const rem = cleanLine.split(/other options:/i)[1].trim();
-              otherOptionsNames = rem.split(",").map(s => s.trim().replace(/\(directly.*?\)/gi, '').trim());
-            } else if (cleanLineLower.startsWith("other nearby options:")) {
-              const rem = cleanLine.split(/other nearby options:/i)[1].trim();
-              otherOptionsNames = rem.split(",").map(s => s.trim().replace(/\(directly.*?\)/gi, '').trim());
-            }
-          }
+        setQuickStopState({
+          active: true,
+          category: data.place_type || 'Nearby Places',
+          results: mappedResults,
+          index: 0
+        });
 
-          if (closestName || nextClosestName) {
-            setSuggestedPois({
-              closestOnRoute: { name: closestName || "Option 1", detour: closestDetour },
-              nextClosest: nextClosestName || "Option 2",
-              otherOptions: otherOptionsNames.length > 0 ? otherOptionsNames : ["Option 3"],
-              isPendingGps: true
-            });
-          }
-        } catch (poiErr) {
-          console.warn("Failed to parse POI lines:", poiErr);
-        }
+        const firstResult = mappedResults[0];
+        lastSuggestedLocationRef.current = {
+          name: firstResult.name,
+          query: firstResult.query,
+          info: textReply
+        };
+
+        hasAskedNavigationQuestionRef.current = true;
+        isFollowUpRef.current = true;
+      }
+
+      if (data.intent === 'navigate' && data.destination) {
+        setIsSimulatedRoutingActive(true);
+        setNavigationErrorTarget(data.destination);
       }
 
       // Scan response for suggested items we can flag as interactive saving blocks!
@@ -3293,33 +3233,31 @@ export default function App() {
       setIsTyping(false);
       const fallbackReason = err.message || err;
       console.log(`FALLBACK_TRIGGER_REASON: Frontend: ${fallbackReason}`);
-      // Gentle offline fallback replies
-      setTimeout(() => {
-        const fallbacks = [
-          `Hi ${activeUser}, I'm listening. I'm operating in limited offline mode right now, but I'm still here to help!`,
-          `I've noted that. I'm currently in a safe offline fallback mode - what else can I help you or Susan with?`,
-          `I'm listening. I'm just reflecting on things while in offline mode. How's the drive going?`
-        ];
-        const textReply = fallbacks[Math.floor(Math.random() * fallbacks.length)];
-        console.log(`FINAL_TTS_RESPONSE: (Frontend Fallback) "${textReply}"`);
-        const botMsgId = generateId();
-        const botMessage: ChatLogMessage = {
-          id: botMsgId,
-          role: 'avatar',
-          type: 'text',
-          content: textReply,
-          timestamp: Date.now(),
-          senderName: 'Roamie'
-        };
+      
+      const isRealNetworkError = !navigator.onLine || fallbackReason.toLowerCase().includes("failed to fetch") || fallbackReason.toLowerCase().includes("network");
+      
+      const textReply = isRealNetworkError 
+        ? "It looks like we've lost internet coverage out here in the hills. I'll continue checking our connection!"
+        : `I'm sorry, I encountered an error: ${fallbackReason}.`;
 
-        updateChatMessages(activeTripId, [...nextMsgs, botMessage]);
+      console.log(`FINAL_TTS_RESPONSE: (Error/Fallback) "${textReply}"`);
+      const botMsgId = generateId();
+      const botMessage: ChatLogMessage = {
+        id: botMsgId,
+        role: 'avatar',
+        type: 'text',
+        content: textReply,
+        timestamp: Date.now(),
+        senderName: 'Roamie'
+      };
 
-        if (profile.settings.responseMode !== 'text') {
-          speakText(textReply, botMsgId);
-        } else {
-          transitionToState('idle');
-        }
-      }, 1000);
+      updateChatMessages(activeTripId, [...nextMsgs, botMessage]);
+
+      if (profile.settings.responseMode !== 'text') {
+        speakText(textReply, botMsgId);
+      } else {
+        transitionToState('idle');
+      }
     } finally {
       setIsTyping(false);
     }
