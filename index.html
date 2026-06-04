@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <title>Roaming Story</title>
+    <title>Roamie</title>
     
     <!-- PWA Primary Configs -->
     <link rel="manifest" href="/manifest.json" />
@@ -12,7 +12,7 @@
     <!-- iOS / Safary Apple Devices Meta Capabilities -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Roaming Story" />
+    <meta name="apple-mobile-web-app-title" content="Roamie" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     
     <!-- Microsoft / Android standalone capabilities -->
@@ -30,10 +30,10 @@
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js')
             .then(reg => {
-              console.log('Roaming Story Service Worker Registered with Scope: ', reg.scope);
+               console.log('Roamie Service Worker Registered with Scope: ', reg.scope);
             })
             .catch(err => {
-              console.error('Roaming Story Service Worker Registration Failed: ', err);
+               console.error('Roamie Service Worker Registration Failed: ', err);
             });
         });
       }

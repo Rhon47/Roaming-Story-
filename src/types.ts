@@ -13,6 +13,8 @@ export interface UserSettings {
   handsFreeEnabled?: boolean;
   smartInterruptEnabled?: boolean;
   voiceAssistanceMode?: 'drive' | 'third_wheel';
+  developerDebugMode?: boolean;
+  alwaysOnWakeWordEnabled?: boolean;
 }
 
 export interface UserProfile {

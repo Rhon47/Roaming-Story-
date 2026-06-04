@@ -1,6 +1,6 @@
 {
   "name": "Roaming Story",
   "description": "A calm, intelligent, and dryly witty AI travel companion for Susan and Rhonda planning their upcoming adventures.",
-  "requestFramePermissions": ["camera", "microphone"],
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

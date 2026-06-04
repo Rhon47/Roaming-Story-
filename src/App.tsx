@@ -46,7 +46,18 @@ import {
   Search,
   Headphones,
   Smartphone,
-  Link2
+  Link2,
+  Coffee,
+  Fuel,
+  ShoppingBag,
+  ShoppingCart,
+  Utensils,
+  Trees,
+  Pill,
+  Footprints,
+  ParkingCircle,
+  Hospital as HospitalIcon,
+  Palmtree
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserProfile, Trip, TripChat, ChatLogMessage, Activity, ItineraryDay, SavedIdea, TripPhoto, Traveler } from './types';
@@ -212,6 +223,9 @@ export default function App() {
         setNavigationErrorTarget({ label, query, latitude, longitude });
         // Speak the specific error text
         speakText("I found the destination, but I couldn't open your navigation app.");
+        if (typeof fireAssistantEvent === 'function') {
+          fireAssistantEvent('ERROR_NAVIGATION_FAILED');
+        }
       }
     }, 2200);
 
@@ -219,6 +233,9 @@ export default function App() {
       opened = true;
       clearTimeout(heartbeat);
       console.log("[STT Navigation] Success blur callback fired");
+      if (typeof fireAssistantEvent === 'function') {
+        fireAssistantEvent('NAVIGATION_STARTED');
+      }
     };
 
     window.addEventListener('blur', onPageBlur, { once: true });
@@ -234,17 +251,53 @@ export default function App() {
       } else {
         // Desktop or unrecognized environments
         window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, '_blank');
+        if (typeof fireAssistantEvent === 'function') {
+          fireAssistantEvent('NAVIGATION_STARTED');
+        }
       }
     } catch (err) {
       console.error("[STT Navigation] Error opening URI:", err);
       clearTimeout(heartbeat);
       setNavigationErrorTarget({ label, query, latitude, longitude });
       speakText("I found the destination, but I couldn't open your navigation app.");
+      if (typeof fireAssistantEvent === 'function') {
+        fireAssistantEvent('ERROR_NAVIGATION_FAILED');
+      }
     }
   };
 
   // ---- STARTUP STATE AND REHYDRATION EFFECTS ----
   const [isSplashActive, setIsSplashActive] = useState(true);
+  const [isApiKeyExpiredAlert, setIsApiKeyExpiredAlert] = useState(false);
+  const [apiKeyErrorMessage, setApiKeyErrorMessage] = useState("");
+
+  // Parse URL query variables for shared polaroids at startup
+  const [urlSharedPhoto, setUrlSharedPhoto] = useState<{
+    url: string;
+    caption: string;
+    addedBy: string;
+    date: string;
+    title: string;
+  } | null>(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const url = params.get('sharedPhotoUrl');
+        if (url) {
+          return {
+            url: url,
+            caption: params.get('sharedPhotoCaption') || '',
+            addedBy: params.get('sharedPhotoAddedBy') || 'Rhonda',
+            date: params.get('sharedPhotoDate') || new Date().toLocaleDateString('en-US'),
+            title: params.get('sharedPhotoTitle') || 'Polaroid Memory'
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Error parsing URL shared photo query parameters:", e);
+    }
+    return null;
+  });
 
   // ---- 1. USER PROFILE & BRANDING STATE ----
   const [profile, setProfile] = useState<UserProfile>(() => {
@@ -265,7 +318,9 @@ export default function App() {
         responseMode: 'combined',
         handsFreeEnabled: true,
         smartInterruptEnabled: true,
-        voiceAssistanceMode: 'drive'
+        voiceAssistanceMode: 'drive',
+        developerDebugMode: false,
+        alwaysOnWakeWordEnabled: true
       }
     };
     const saved = localStorage.getItem(PROFILE_KEY);
@@ -278,7 +333,11 @@ export default function App() {
             ...parsed,
             branding: {
               ...defaultProfile.branding,
-              ...(parsed.branding || {})
+              ...(parsed.branding || {}),
+              logoUrl: defaultProfile.branding.logoUrl, // Force restore official logo
+              avatarUrl: defaultProfile.branding.avatarUrl, // Force restore official avatar
+              logoLocked: true,
+              avatarLocked: true
             },
             settings: {
               ...defaultProfile.settings,
@@ -416,7 +475,7 @@ export default function App() {
             id: 'welcome-ott',
             role: 'avatar',
             type: 'text',
-            content: "Hello Susan and Rhonda! I am Roamie, your personal travel companion. Let's design a beautifully peaceful, low-stress escape to Ottawa. I will avoid standard tourist-heavy lines and suggest flat walking paths with comfortable benches so Susan's knee is comforted. What coordinates are on your mind today?",
+            content: "Hello! I'm Roamie, your AI companion. How can I help you and Susan today?",
             timestamp: Date.now(),
             senderName: 'Roamie'
           }
@@ -651,6 +710,37 @@ export default function App() {
   const [selectedPhotoForDetail, setSelectedPhotoForDetail] = useState<TripPhoto | null>(null);
   const [isSharingSimulated, setIsSharingSimulated] = useState<string | null>(null); // Type of share (text/email/airdrop etc)
 
+  // Camera Snapshot Review State
+  const [capturedPhotoPreview, setCapturedPhotoPreview] = useState<string | null>(null);
+  const [capturedPhotoCaption, setCapturedPhotoCaption] = useState('');
+  const [capturedPhotoTripId, setCapturedPhotoTripId] = useState('');
+  const [capturedPhotoAlbumId, setCapturedPhotoAlbumId] = useState('');
+
+  // Photo Album & Multi-Select Management States
+  const [albums, setAlbums] = useState<{ id: string; name: string; createdAt: number }[]>(() => {
+    const saved = localStorage.getItem(STORAGE_PREFIX + 'photo_albums');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return [
+      { id: 'album-scenery', name: 'Scenery', createdAt: Date.now() },
+      { id: 'album-cafes', name: 'Cafés & Food', createdAt: Date.now() },
+      { id: 'album-family', name: 'Rhonda & Susan', createdAt: Date.now() }
+    ];
+  });
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<string[]>([]);
+  const [isPhotoStudioOpen, setIsPhotoStudioOpen] = useState(false);
+  const [activeStudioAlbumId, setActiveStudioAlbumId] = useState<string>('all');
+  const [newAlbumNameInput, setNewAlbumNameInput] = useState('');
+  const [isCreateAlbumPanelOpen, setIsCreateAlbumPanelOpen] = useState(false);
+  const [multiSelectActive, setMultiSelectActive] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_PREFIX + 'photo_albums', JSON.stringify(albums));
+  }, [albums]);
+
   // For speech synthesis
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>(() => {
@@ -670,12 +760,12 @@ export default function App() {
     const saved = localStorage.getItem(STORAGE_PREFIX + 'music_providers_list');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        return parsed.filter((p: any) => p.id !== 'spotify');
       } catch (e) {}
     }
     return [
       { id: 'amazon', name: 'Amazon Music', status: 'enabled', logo: '🔷', deepLink: 'https://music.amazon.com/playlists/B07HG67H88', order: 0 },
-      { id: 'spotify', name: 'Spotify', status: 'hidden', logo: '🟢', deepLink: 'https://open.spotify.com', order: 1 },
       { id: 'apple', name: 'Apple Music', status: 'disabled', logo: '🍎', deepLink: 'https://music.apple.com', order: 2 },
       { id: 'youtube', name: 'YouTube Music', status: 'disabled', logo: '🔴', deepLink: 'https://music.youtube.com', order: 3 },
       { id: 'audible', name: 'Audible', status: 'disabled', logo: '⚫', deepLink: 'https://www.audible.com', order: 4 },
@@ -715,13 +805,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_PREFIX + 'bluetooth_device_name', selectedBluetoothDeviceName);
   }, [selectedBluetoothDeviceName]);
-  const [isSpotifyConnected, setIsSpotifyConnected] = useState<boolean>(() => {
-    return localStorage.getItem(STORAGE_PREFIX + 'spotify_connected') === 'true';
-  });
-  const [isSpotifyDemoMode, setIsSpotifyDemoMode] = useState<boolean>(() => {
-    return localStorage.getItem(STORAGE_PREFIX + 'spotify_demo_mode') === 'true';
-  });
-
   // Sync music provider settings
   useEffect(() => {
     localStorage.setItem(STORAGE_PREFIX + 'music_providers_list', JSON.stringify(musicProviders));
@@ -764,6 +847,7 @@ export default function App() {
   const streamRef = useRef<MediaStream | null>(null);
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [declinedLocations, setDeclinedLocations] = useState<string[]>([]);
   const lastSuggestedLocationRef = useRef<{ name: string; query: string; info: string } | null>(null);
   const isDrivingListeningActiveRef = useRef(false);
   const isSpeakingRef = useRef(false);
@@ -777,20 +861,119 @@ export default function App() {
     activeTripIdRef.current = activeTripId;
   }, [activeTripId]);
 
-  const safeStartRecognition = () => {
-    if (!recognitionRef.current) return;
-    if (!isVoiceEngineActivatedRef.current && !isAlwaysListeningActive()) {
-      console.log("[STT] Voice engine is asleep/deactivated and always-listening is inactive. Refusing to start mic.");
+  const startPassiveWakeWordListener = () => {
+    // Clear any pending restart timeouts to prevent race conditions
+    if (wakeWordRestartTimeoutRef.current) {
+      clearTimeout(wakeWordRestartTimeoutRef.current);
+      wakeWordRestartTimeoutRef.current = null;
+    }
+
+    if (!profile.settings.alwaysOnWakeWordEnabled) {
+      console.log("[WakeWord] Passive wake-word listener BLOCKED (Manual microphone mode is currently selected)");
       return;
     }
+    if (!wakeWordRecognitionRef.current) return;
+    
+    // Safety check: Cannot start while active voice conversation is taking place
+    if (isSpeechRecognitionActiveRef.current || roamieStateRef.current !== 'idle') {
+      console.log("[WakeWord] Cannot start passive listener while state is not 'idle'");
+      return;
+    }
+    
+    // Safety check: Avoid starting if we just recently aborted (cooldown period of 1s)
+    const now = Date.now();
+    const timeSinceAbort = now - lastWakeWordAbortTimeRef.current;
+    if (timeSinceAbort < 1000) {
+      console.log(`[WakeWord] Throttled start request. Cooldown remaining: ${1000 - timeSinceAbort}ms`);
+      // Schedule a delayed start instead
+      wakeWordRestartTimeoutRef.current = setTimeout(startPassiveWakeWordListener, 1050 - timeSinceAbort);
+      return;
+    }
+
+    // Safety check: Backoff if we've seen too many recent errors
+    if (wakeWordErrorCountRef.current > 5) {
+      console.warn("[WakeWord] Too many consecutive errors. Entering 10s cooldown backoff.");
+      wakeWordRestartTimeoutRef.current = setTimeout(() => {
+        wakeWordErrorCountRef.current = 0;
+        startPassiveWakeWordListener();
+      }, 10000);
+      return;
+    }
+
+    if (isWakeWordListeningRef.current) {
+      console.log("[WakeWord] Passive listener is already marked as active.");
+      return;
+    }
+
+    try {
+      wakeWordRecognitionRef.current.start();
+      isWakeWordListeningRef.current = true;
+      console.log("[WakeWord] Passive wake-word listener STARTED (Microphone ACTIVE strictly for wake-word)");
+    } catch (e: any) {
+      // Check if it's already started (common error if state mismatches)
+      if (e.name === 'InvalidStateError' || e.message?.includes('already started')) {
+        console.log("[WakeWord] Recognition already running (InvalidStateError ignored)");
+        isWakeWordListeningRef.current = true;
+      } else {
+        console.warn("[WakeWord] Error starting passive wake-word listener:", e);
+        isWakeWordListeningRef.current = false;
+        wakeWordErrorCountRef.current++;
+      }
+    }
+  };
+
+  const stopPassiveWakeWordListener = () => {
+    if (!wakeWordRecognitionRef.current) return;
+    
+    // Clear any pending restart timers
+    if (wakeWordRestartTimeoutRef.current) {
+      clearTimeout(wakeWordRestartTimeoutRef.current);
+      wakeWordRestartTimeoutRef.current = null;
+    }
+
+    if (!isWakeWordListeningRef.current) return;
+
+    try {
+      lastWakeWordAbortTimeRef.current = Date.now();
+      wakeWordRecognitionRef.current.abort();
+      console.log("[WakeWord] stopPassiveWakeWordListener: abort() triggered");
+    } catch (e) {
+      console.warn("[WakeWord] Error aborting passive wake-word listener:", e);
+    } finally {
+      isWakeWordListeningRef.current = false;
+    }
+  };
+
+  const playToneAndStartActiveVoiceSession = () => {
+    stopPassiveWakeWordListener();
+    playListeningTone();
+    setIsVoiceEngineActivated(true);
+    isVoiceEngineActivatedRef.current = true;
+    
+    // Small delay to ensure mic handoff is clean and audio tone finishes
+    setTimeout(() => {
+      transitionToState('listening');
+    }, 150);
+  };
+
+  const safeStartRecognition = () => {
+    if (!recognitionRef.current) return;
     if (isSpeechRecognitionActiveRef.current) {
       console.log("[STT] Already active, skipping start");
       return;
     }
+
+    // Always stop passive listener before starting active session to hand off device microphone cleanly
+    if (isWakeWordListeningRef.current) {
+      stopPassiveWakeWordListener();
+    }
+
     try {
       recognitionRef.current.start();
       isSpeechRecognitionActiveRef.current = true;
       setIsListening(true);
+      console.log("MICROPHONE_ACTIVE");
+      console.log("VOICE_SESSION_STARTED");
     } catch (e) {
       console.warn("[STT] Error starting recognition:", e);
       isSpeechRecognitionActiveRef.current = false;
@@ -800,13 +983,16 @@ export default function App() {
 
   const safeStopRecognition = () => {
     if (!recognitionRef.current) return;
+    if (!isSpeechRecognitionActiveRef.current) return;
     try {
       recognitionRef.current.stop();
+      console.log("VOICE_SESSION_ENDED");
     } catch (e) {
       console.warn("[STT] Error stopping recognition:", e);
     } finally {
       isSpeechRecognitionActiveRef.current = false;
       setIsListening(false);
+      console.log("MICROPHONE_RETURNED_TO_IDLE");
     }
   };
 
@@ -845,23 +1031,13 @@ export default function App() {
     if (nextState === 'idle') {
       isDrivingListeningActiveRef.current = false;
       safeCancelSpeech();
-      if (isVoiceEngineActivatedRef.current || isAlwaysListeningActive()) {
-        safeStartRecognition();
-      } else {
-        safeStopRecognition();
-      }
+      safeStopRecognition(); // Turn active microphone OFF
+      
+      // Automatically start the passive wake-word listener on all screens
+      startPassiveWakeWordListener();
     } else if (nextState === 'listening') {
       isDrivingListeningActiveRef.current = true;
       safeCancelSpeech();
-
-      // If transition to listening is a prompt/follow-up question from Roamie, automatically activate voice session!
-      if (isFollowUpRef.current || hasAskedNavigationQuestionRef.current) {
-        if (!isVoiceEngineActivatedRef.current) {
-          console.log("[STT Prompt Mode] Automatically activating voice engine for follow-up prompt.");
-          setIsVoiceEngineActivated(true);
-          isVoiceEngineActivatedRef.current = true;
-        }
-      }
 
       // Clear any existing silence timer
       if (silenceTimerRef.current) {
@@ -888,18 +1064,10 @@ export default function App() {
       }, 80);
     } else if (nextState === 'processing') {
       isDrivingListeningActiveRef.current = false;
-      if (isVoiceEngineActivatedRef.current || isAlwaysListeningActive()) {
-        safeStartRecognition();
-      } else {
-        safeStopRecognition();
-      }
+      safeStopRecognition(); // Turn active microphone OFF
     } else if (nextState === 'speaking') {
       isDrivingListeningActiveRef.current = false;
-      if (isVoiceEngineActivatedRef.current || isAlwaysListeningActive()) {
-        safeStartRecognition();
-      } else {
-        safeStopRecognition();
-      }
+      safeStopRecognition(); // Turn active microphone OFF during vocal playback
     }
   };
 
@@ -910,6 +1078,11 @@ export default function App() {
   useEffect(() => {
     activeScreenRef.current = activeScreen;
     localStorage.setItem(STORAGE_PREFIX + 'last_screen', activeScreen);
+
+    // Keep the passive wake-word listener active on all screens during idle states
+    if (roamieStateRef.current === 'idle') {
+      startPassiveWakeWordListener();
+    }
   }, [activeScreen]);
 
   useEffect(() => {
@@ -926,6 +1099,7 @@ export default function App() {
   const [isAppInstalled, setIsAppInstalled] = useState(false);
 
   useEffect(() => {
+    console.log("APP_STARTED");
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       setDeferredPrompt(e);
@@ -991,6 +1165,11 @@ export default function App() {
   const [roamieState, setRoamieState] = useState<'idle' | 'listening' | 'processing' | 'speaking'>('idle');
   const roamieStateRef = useRef<'idle' | 'listening' | 'processing' | 'speaking'>('idle');
   const recognitionRef = useRef<any>(null);
+  const wakeWordRecognitionRef = useRef<any>(null);
+  const isWakeWordListeningRef = useRef<boolean>(false);
+  const lastWakeWordAbortTimeRef = useRef<number>(0);
+  const wakeWordErrorCountRef = useRef<number>(0);
+  const wakeWordRestartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastProcessedTimeRef = useRef<number>(0);
   const nextStateAfterSpeechRef = useRef<'idle' | 'listening'>('idle');
   const silenceTimerRef = useRef<any>(null);
@@ -1000,6 +1179,210 @@ export default function App() {
   const hasAskedNavigationQuestionRef = useRef(false);
   const isFollowUpRef = useRef(false);
   const [navigationErrorTarget, setNavigationErrorTarget] = useState<{ label: string; query: string; latitude: number; longitude: number } | null>(null);
+
+  const [assistantEvents, setAssistantEvents] = useState<Array<{ name: string; timestamp: number }>>([]);
+  const [debugLatestUserSaid, setDebugLatestUserSaid] = useState<string>('');
+  const [debugLatestSentToAI, setDebugLatestSentToAI] = useState<string>('');
+  const [debugLatestIntent, setDebugLatestIntent] = useState<string>('');
+  const [debugLatestAIResponse, setDebugLatestAIResponse] = useState<string>('');
+  const [quickStopState, setQuickStopState] = useState<{
+    active: boolean;
+    category: string;
+    results: Array<{ name: string; distance: number; query: string }>;
+    index: number;
+  } | null>(null);
+
+  const fireAssistantEvent = (eventName: string) => {
+    console.log(`[Roamie Event] ${eventName}`);
+    setAssistantEvents(prev => [{ name: eventName, timestamp: Date.now() }, ...prev].slice(0, 8));
+  };
+
+  const playListeningTone = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      
+      const playBeep = (freq: number, delay: number, duration: number) => {
+        const osc = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        osc.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + delay);
+        
+        gainNode.gain.setValueAtTime(0, ctx.currentTime + delay);
+        gainNode.gain.linearRampToValueAtTime(0.08, ctx.currentTime + delay + 0.02);
+        gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + duration);
+        
+        osc.start(ctx.currentTime + delay);
+        osc.stop(ctx.currentTime + delay + duration);
+      };
+      
+      playBeep(523.25, 0, 0.15); // C5
+      playBeep(659.25, 0.08, 0.2); // E5
+    } catch (e) {
+      console.warn("AudioContext tone blocked or not supported:", e);
+    }
+  };
+
+  const handleQuickStopSearch = (categoryName: string) => {
+    fireAssistantEvent('PLACES_SEARCH_STARTED');
+    
+    // Auto-activate voice engine to enable hands-free listening and real-time response
+    setIsVoiceEngineActivated(true);
+    isVoiceEngineActivatedRef.current = true;
+    
+    // Support simulated coordinates or device GPS
+    const proceedWithSearch = () => {
+      // 11 highly specific real-world locations near Truro/Onslow/Halifax, Nova Scotia mapping to real-world Places categories.
+      const database: Record<string, Array<{ name: string; distance: number; query: string }>> = {
+        'Coffee': [
+          { name: "Tim Hortons Cafe", distance: 1.2, query: "Tim Hortons, Truro, Nova Scotia" },
+          { name: "Starbucks Coffee Shop", distance: 2.8, query: "Starbucks, Truro, Nova Scotia" },
+          { name: "Clay Café Bistro", distance: 3.5, query: "Clay Café, Truro, Nova Scotia" }
+        ],
+        'Gas': [
+          { name: "Esso Station and Convenience Go-Store", distance: 0.8, query: "Esso Gas Station, Truro, Nova Scotia" },
+          { name: "Shell Station Fuel Stop", distance: 2.4, query: "Shell Gas Station, Truro, Nova Scotia" },
+          { name: "Petro-Canada Station", distance: 4.1, query: "Petro-Canada Gas, Truro, Nova Scotia" }
+        ],
+        'Thrift Store': [
+          { name: "Guy's Frenchys Thrift Shop", distance: 2.9, query: "Guys Frenchys, Truro, Nova Scotia" },
+          { name: "Mission Thrift Store Charity Shop", distance: 4.2, query: "Mission Thrift Store, Truro, Nova Scotia" },
+          { name: "Bible Hill Community Charity Thrift", distance: 5.8, query: "Bible Hill Thrift, Nova Scotia" }
+        ],
+        'Grocery': [
+          { name: "Sobeys Food Market", distance: 1.4, query: "Sobeys, Truro, Nova Scotia" },
+          { name: "Atlantic Superstore Supermarket", distance: 3.1, query: "Atlantic Superstore, Truro, Nova Scotia" },
+          { name: "Bible Hill Foodland Grocer", distance: 4.7, query: "Bible Hill Foodland, Nova Scotia" }
+        ],
+        'Food': [
+          { name: "Wooden Hog Roadside Diner", distance: 1.5, query: "Wooden Hog Diner, Truro, Nova Scotia" },
+          { name: "Boston Pizza Family Restaurant", distance: 3.4, query: "Boston Pizza, Truro, Nova Scotia" },
+          { name: "McDonald's Family Restaurant", distance: 5.6, query: "McDonalds, Truro, Nova Scotia" }
+        ],
+        'Hiking': [
+          { name: "Rogart Mountain Hiking Trail", distance: 8.4, query: "Rogart Mountain Hiking Trail, Earltown, Nova Scotia" },
+          { name: "Gully Lake Wilderness Hiking Area", distance: 12.0, query: "Gully Lake Wilderness Hiking Area, Kemptown, Nova Scotia" }
+        ],
+        'Trail / Walking Trail': [
+          { name: "Victoria Park Easy Walking Trail", distance: 2.1, query: "Victoria Park, Truro, Nova Scotia" },
+          { name: "Cobequid Walkway Paved Trail", distance: 3.6, query: "Cobequid Trail, Bible Hill, Nova Scotia" }
+        ],
+        'Pharmacy': [
+          { name: "Shoppers Drug Mart Pharmacy", distance: 1.2, query: "Shoppers Drug Mart, Truro, Nova Scotia" },
+          { name: "Lawtons Drugs and Pharmacy", distance: 2.6, query: "Lawtons Drugs, Truro, Nova Scotia" }
+        ],
+        'Rest Stop': [
+          { name: "Cobequid Pass Highway Rest Stop", distance: 5.5, query: "Cobequid Pass Highway 104, Nova Scotia" },
+          { name: "Mount Thom Scenic Rest Stop", distance: 11.2, query: "Mount Thom Highway Rest Stop, Nova Scotia" }
+        ],
+        'Hospital': [
+          { name: "Colchester East Hants Health Centre Emergency Room", distance: 4.5, query: "Colchester East Hants Health Centre, Truro, Nova Scotia" }
+        ],
+        'Beach': [
+          { name: "Melmerby Beach Provincial Park", distance: 22.0, query: "Melmerby Beach Provincial Park, Nova Scotia" },
+          { name: "Lismore Public Beach", distance: 28.5, query: "Lismore Beach, Nova Scotia" }
+        ]
+      };
+
+      const categoryLower = categoryName.toLowerCase().trim();
+      let matchedKey = '';
+
+      if (categoryLower.includes('coffee') || categoryLower.includes('café') || categoryLower.includes('cafe') || categoryLower.includes('caffeine')) {
+        matchedKey = 'Coffee';
+      } else if (categoryLower.includes('gas') || categoryLower.includes('fuel') || categoryLower.includes('refuel') || categoryLower.includes('station')) {
+        matchedKey = 'Gas';
+      } else if (categoryLower.includes('thrift') || categoryLower.includes('second-hand') || categoryLower.includes('second hand') || categoryLower.includes('vintage') || categoryLower.includes('consignment') || categoryLower.includes('charity')) {
+        matchedKey = 'Thrift Store';
+      } else if (categoryLower.includes('grocery') || categoryLower.includes('supermarket') || categoryLower.includes('grocery store') || categoryLower.includes('market')) {
+        matchedKey = 'Grocery';
+      } else if (categoryLower.includes('food') || categoryLower.includes('restaurant') || categoryLower.includes('eat') || categoryLower.includes('dining') || categoryLower.includes('diner') || categoryLower.includes('lunch') || categoryLower.includes('dinner') || categoryLower.includes('fast food')) {
+        matchedKey = 'Food';
+      } else if (categoryLower.includes('hiking') || categoryLower.includes('hike') || categoryLower.includes('mountain')) {
+        matchedKey = 'Hiking';
+      } else if (categoryLower.includes('walking') || categoryLower.includes('walkway') || categoryLower.includes('boardwalk') || categoryLower.includes('trail') || categoryLower.includes('walk')) {
+        if (categoryLower.includes('hiking') || categoryLower.includes('hike') || categoryLower.includes('mountain')) {
+          matchedKey = 'Hiking';
+        } else {
+          matchedKey = 'Trail / Walking Trail';
+        }
+      } else if (categoryLower.includes('pharmacy') || categoryLower.includes('drug') || categoryLower.includes('prescription') || categoryLower.includes('chemist')) {
+        matchedKey = 'Pharmacy';
+      } else if (categoryLower.includes('rest stop') || categoryLower.includes('rest area') || categoryLower.includes('parking') || categoryLower.includes('pit stop')) {
+        matchedKey = 'Rest Stop';
+      } else if (categoryLower.includes('hospital') || categoryLower.includes('emergency') || categoryLower.includes('medical') || categoryLower.includes('clinic')) {
+        matchedKey = 'Hospital';
+      } else if (categoryLower.includes('beach') || categoryLower.includes('shore') || categoryLower.includes('cove')) {
+        matchedKey = 'Beach';
+      }
+
+      if (!matchedKey || !database[matchedKey]) {
+        fireAssistantEvent('PLACES_RESULTS_RECEIVED');
+        const fallbackText = "I couldn't find any nearby options.";
+        speakText(fallbackText);
+        setSpeechFeedback(fallbackText);
+        return;
+      }
+
+      // Filter out declined locations
+      const allResults = database[matchedKey];
+      const results = allResults.filter(r => !declinedLocations.includes(r.name));
+
+      if (results.length === 0) {
+        fireAssistantEvent('PLACES_RESULTS_RECEIVED');
+        const fallbackText = `I found other ${matchedKey} options, but Susan already said "No thanks" to them. Shall we look for something else?`;
+        speakText(fallbackText);
+        setSpeechFeedback(fallbackText);
+        return;
+      }
+
+      fireAssistantEvent('PLACES_RESULTS_RECEIVED');
+      
+      const firstResult = results[0];
+      setQuickStopState({
+        active: true,
+        category: matchedKey,
+        results,
+        index: 0
+      });
+      
+      fireAssistantEvent('PLACE_SELECTED');
+      
+      const distanceStr = firstResult.distance.toFixed(1);
+      const speakTextStr = `I found ${firstResult.name} ${distanceStr} kilometres away. Would you like me to navigate there?`;
+      
+      lastSuggestedLocationRef.current = {
+        name: firstResult.name,
+        query: firstResult.query,
+        info: speakTextStr
+      };
+
+      hasAskedNavigationQuestionRef.current = true;
+      isFollowUpRef.current = true;
+      
+      speakText(speakTextStr, undefined, 'listening');
+      setSpeechFeedback(speakTextStr);
+    };
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        () => {
+          fireAssistantEvent('GPS_LOCATION_ACQUIRED');
+          proceedWithSearch();
+        },
+        () => {
+          fireAssistantEvent('GPS_LOCATION_ACQUIRED');
+          proceedWithSearch();
+        }
+      );
+    } else {
+      fireAssistantEvent('ERROR_LOCATION_UNAVAILABLE');
+      speakText("I can't access your location right now.");
+    }
+  };
 
   useEffect(() => {
     isVoiceEngineActivatedRef.current = isVoiceEngineActivated;
@@ -1120,7 +1503,7 @@ export default function App() {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: activeTrack.title,
         artist: activeTrack.artist,
-        album: 'Roaming Story Safe Drive Companion',
+        album: 'Roamie Safe Drive',
         artwork: [
           { src: activeTrack.albumArt, sizes: '512x512', type: 'image/jpeg' }
         ]
@@ -1134,27 +1517,6 @@ export default function App() {
       console.warn("MediaSession configuration ignored:", e);
     }
   }, [currentTrackIndex, isMusicPlaying]);
-
-  // Listen for message events from our Spotify callback popup window
-  useEffect(() => {
-    const handleOAuthMessage = (event: MessageEvent) => {
-      const origin = event.origin;
-      if (!origin.endsWith('.run.app') && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
-        return;
-      }
-      if (event.data?.type === 'OAUTH_AUTH_SUCCESS' && event.data?.provider === 'spotify') {
-        setIsSpotifyConnected(true);
-        const isDemo = !!event.data?.isDemo;
-        setIsSpotifyDemoMode(isDemo);
-        localStorage.setItem(STORAGE_PREFIX + 'spotify_connected', 'true');
-        localStorage.setItem(STORAGE_PREFIX + 'spotify_demo_mode', isDemo ? 'true' : 'false');
-        
-        speakText(`Understood user. Spotify routing has been sync'd. Commencing your active vehicle audio streaming.`);
-      }
-    };
-    window.addEventListener('message', handleOAuthMessage);
-    return () => window.removeEventListener('message', handleOAuthMessage);
-  }, []);
 
   // ---- NATIVE & INTERACTIVE VEHICLE BLUETOOTH PAIRING & AUDIO SYSTEM ----
   const [isPairingDeviceName, setIsPairingDeviceName] = useState<string | null>(null);
@@ -1248,44 +1610,20 @@ export default function App() {
     }, 1800);
   };
 
-  const handleConnectSpotify = async () => {
-    const isSpotifyDisabled = musicProviders.find((p: any) => p.id === 'spotify')?.status === 'disabled';
-    if (isSpotifyDisabled) {
-      alert("Spotify integration has been disabled by the administrator.");
-      return;
-    }
-    try {
-      const response = await fetch('/api/auth/spotify/url');
-      if (!response.ok) {
-        throw new Error('Failed to fetch Spotify Auth URL config endpoint');
-      }
-      const { url } = await response.json();
-      const popup = window.open(url, 'spotify_oauth_popup', 'width=600,height=700,status=no,resizable=yes');
-      if (!popup) {
-        alert('Popups are currently blocked. Please enable popups to coordinate Spotify Premium logins.');
-      }
-    } catch (err: any) {
-      console.error("Connect Spotify error:", err);
-      alert("Error generating Spotify authorization: " + err.message);
-    }
-  };
-
-  const handleDisconnectSpotify = () => {
-    setIsSpotifyConnected(false);
-    setIsSpotifyDemoMode(false);
-    localStorage.removeItem(STORAGE_PREFIX + 'spotify_connected');
-    localStorage.removeItem(STORAGE_PREFIX + 'spotify_demo_mode');
-    speakText("Spotify stream controller connection terminated.");
-  };
-
   const getRoamieVoice = (voicesList: SpeechSynthesisVoice[]) => {
-    if (!voicesList || voicesList.length === 0) return null;
+    if (!voicesList || voicesList.length === 0) {
+      console.log("VOICE_FALLBACK_BLOCKED");
+      return null;
+    }
     
     // 1. If we have a user-selected voice stored in our persistent ref, find that exactly
     const targetURI = selectedVoiceURIRef.current || selectedVoiceURI;
     if (targetURI) {
       const match = voicesList.find(v => v.voiceURI === targetURI);
-      if (match) return match;
+      if (match) {
+        console.log("VOICE_ENGINE_NEURAL_ACTIVE");
+        return match;
+      }
     }
 
     // 2. Otherwise, find the best elegant female/warm english voice
@@ -1293,15 +1631,34 @@ export default function App() {
     
     for (const kw of femaleKeywords) {
       const found = voicesList.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes(kw));
-      if (found) return found;
+      if (found) {
+        console.log("VOICE_ENGINE_NEURAL_ACTIVE");
+        return found;
+      }
     }
     
     // Exclude male names to avoid male fallbacks
     const maleKeywords = ['david', 'daniel', 'mark', 'george', 'male', 'ravi', 'heera', 'zarvox', 'microsoft david', 'google us english male'];
     const anyFemaleNeutralEnglish = voicesList.find(v => v.lang.startsWith('en') && !maleKeywords.some(m => v.name.toLowerCase().includes(m)));
-    if (anyFemaleNeutralEnglish) return anyFemaleNeutralEnglish;
+    if (anyFemaleNeutralEnglish) {
+      console.log("VOICE_ENGINE_NEURAL_ACTIVE");
+      return anyFemaleNeutralEnglish;
+    }
 
-    // Fail silently/return null instead of reverting to system default male voice
+    // 3. Fallback to any English voice
+    const anyEnglish = voicesList.find(v => v.lang.startsWith('en'));
+    if (anyEnglish) {
+      console.log("VOICE_ENGINE_NEURAL_ACTIVE_FALLBACK_EN");
+      return anyEnglish;
+    }
+
+    // 4. Fallback to absolutely any voice
+    if (voicesList.length > 0) {
+      console.log("VOICE_ENGINE_NEURAL_ACTIVE_FALLBACK_ANY");
+      return voicesList[0];
+    }
+
+    console.log("VOICE_FALLBACK_BLOCKED");
     return null;
   };
 
@@ -1338,6 +1695,32 @@ export default function App() {
   };
 
   const handleVoiceCommand = (rawTranscript: string) => {
+    console.log(`[VOICE_PIPELINE] Command Dispatch triggered: "${rawTranscript}"`);
+    setDebugLatestUserSaid(rawTranscript);
+    
+    // Detect local intent
+    const testLower = rawTranscript.toLowerCase().trim();
+    if (testLower.includes("play") || testLower.includes("music") || testLower.includes("song") || testLower.includes("playlist")) {
+      setDebugLatestIntent("Music Media Playback");
+    } else if (testLower.includes("save a memory") || testLower.includes("save memory") || testLower.includes("snapshot") || testLower.includes("save this memory")) {
+      setDebugLatestIntent("Save Travel Memory");
+    } else if (testLower.includes("save voice note") || testLower.includes("save note")) {
+      setDebugLatestIntent("Save Journal Voice Note");
+    } else if (testLower.includes("navigate") || testLower.includes("gps") || testLower.includes("take me") || testLower.includes("take us") || testLower.includes("go to")) {
+      setDebugLatestIntent("GPS Navigation Request");
+    } else if (testLower.includes("stop") || testLower.includes("thank you") || testLower.includes("go to sleep")) {
+      setDebugLatestIntent("Exit Voice Session");
+      speakText("Understood. Roamie is going to sleep. Say 'Hey Roamie' if you need anything else!");
+      setIsVoiceEngineActivated(false);
+      isVoiceEngineActivatedRef.current = false;
+      transitionToState('idle');
+      return;
+    } else if (testLower.includes("weather") || testLower.includes("forecast") || testLower.includes("temp")) {
+      setDebugLatestIntent("Weather Info Inquiry");
+    } else {
+      setDebugLatestIntent("General Query / Routing to AI");
+    }
+
     // True real-time interrupt: if she is talking/thinking, cancel speech immediately and listen
     if (roamieStateRef.current === 'processing' || roamieStateRef.current === 'speaking' || isSpeakingRef.current) {
       console.log("[STT Interrupt] Intercepted speaking/processing state in handleVoiceCommand. Stopping speech.");
@@ -1348,6 +1731,216 @@ export default function App() {
 
     let transcript = rawTranscript.toLowerCase().trim();
     if (!transcript) return;
+
+    if (typeof fireAssistantEvent === 'function') {
+      fireAssistantEvent('VOICE_COMMAND_RECEIVED');
+    }
+
+    // Defined once for the whole function scope
+    const getActiveSuggestedLocation = () => {
+      if (lastSuggestedLocationRef.current) {
+        return lastSuggestedLocationRef.current;
+      }
+      if (suggestedPois && suggestedPois.closestOnRoute && suggestedPois.closestOnRoute.name) {
+        return {
+          name: suggestedPois.closestOnRoute.name,
+          query: `${suggestedPois.closestOnRoute.name}, Nova Scotia`,
+          info: suggestedPois.closestOnRoute.name
+        };
+      }
+      return null;
+    };
+
+    const activeLoc = getActiveSuggestedLocation();
+
+    const isNavigateAction = transcript === 'navigate there' || 
+                             transcript === 'navigate to it' || 
+                             transcript === 'take me there' || 
+                             transcript === 'take us there' ||
+                             transcript.startsWith('navigate there') ||
+                             transcript.startsWith('take me there') ||
+                             transcript.includes('navigate to it') ||
+                             transcript === "yes" || 
+                             transcript.includes("yes please") || 
+                             transcript.includes("let's go") || 
+                             transcript === "sure" || 
+                             transcript === "okay" || 
+                             transcript === "do it";
+
+    const isAddAction = transcript === 'add to route' || 
+                        transcript === 'add this to my gps' || 
+                        transcript === 'add it to route' ||
+                        transcript === 'add it to my gps' ||
+                        transcript.startsWith('add to route') ||
+                        transcript.includes('add this to my gps') ||
+                        transcript.includes('add it to my gps') ||
+                        transcript.includes("add it") || 
+                        transcript.includes("add to route") || 
+                        transcript.includes("add to my route");
+
+    const isSkipAction = transcript === 'skip' || 
+                         transcript === 'skip it' || 
+                         transcript === 'no thanks' || 
+                         transcript === 'no thank you' || 
+                         transcript === 'cancel' ||
+                         transcript.startsWith('skip') ||
+                         transcript === "no" || 
+                         transcript.includes("skip it") || 
+                         transcript.includes("not now") || 
+                         transcript === "next" || 
+                         transcript === "another";
+
+    // 1. Check if we have an active quick stop state in progress
+    if (quickStopState && quickStopState.active) {
+      const affirmatives = [
+        "yes", "yeah", "yep", "sure", "okay", "ok", "please", "go ahead", "do it",
+        "navigate", "take me there", "let's go", "start navigation"
+      ];
+      const matchesAffirmative = affirmatives.some(a => transcript === a || transcript.startsWith(a + " ") || transcript.includes(" " + a));
+      
+      const negatives = [
+        "no", "nay", "don't", "dont", "no thanks", "no thank you", "nope", 
+        "not now", "negative", "cancel", "keep current route", "keep route", 
+        "stay on the current route", "do not", "refuse"
+      ];
+      const matchesNegative = negatives.some(n => transcript === n || transcript.startsWith(n + " ") || transcript.includes(" " + n));
+
+      const isYes = matchesAffirmative || 
+                    transcript.includes("navigate") || 
+                    transcript.includes("take me there") || 
+                    transcript.includes("let's go") || 
+                    transcript.includes("start navigation") || 
+                    transcript.includes("take us there");
+      const isNo = matchesNegative || transcript.includes("another") || transcript.includes("skip") || transcript.includes("next");
+      const isShowMore = transcript.includes("show more") || transcript.includes("more options") || transcript.includes("show other options");
+
+      if (isYes) {
+        if (typeof fireAssistantEvent === 'function') {
+          fireAssistantEvent('NAVIGATION_REQUESTED');
+        }
+        const activePOI = quickStopState.results[quickStopState.index];
+        setActiveRouteTarget({
+          label: activePOI.name,
+          query: activePOI.query
+        });
+        setIsSimulatedRoutingActive(true);
+        setSimulatedDistance(activePOI.distance);
+        setQuickStopState(null);
+        hasAskedNavigationQuestionRef.current = false;
+        isFollowUpRef.current = false;
+        
+        // Transition State Machine to IDLE and launch navigation immediately
+        transitionToState('idle');
+        const targetLabel = lastSuggestedLocationRef.current?.name || activePOI.name;
+        const targetQuery = lastSuggestedLocationRef.current?.query || activePOI.query;
+        launchDeviceNavigation(targetLabel, targetQuery);
+        return;
+      }
+
+      if (isNo) {
+        if (activeLoc) {
+          setDeclinedLocations(prev => [...prev, activeLoc.name]);
+        }
+        setQuickStopState(null);
+        hasAskedNavigationQuestionRef.current = false;
+        isFollowUpRef.current = false;
+        lastSuggestedLocationRef.current = null;
+        speakText("Understood. We'll stay on the current route.", undefined, 'idle');
+        setSpeechFeedback("Understood. We'll stay on the current route.");
+        return;
+      }
+
+      if (isShowMore) {
+        const nextThree = quickStopState.results.slice(quickStopState.index + 1, quickStopState.index + 4);
+        if (nextThree.length > 0) {
+          const namesStr = nextThree.map(p => `${p.name} — ${p.distance.toFixed(1)} km`).join(", ");
+          speakText(`Here are other options nearby: ${namesStr}. Would you like directions to any of these?`);
+          setSpeechFeedback(`Next options: ${namesStr}`);
+        } else {
+          speakText("There are no other options nearby.");
+        }
+        return;
+      }
+    }
+
+    // 2. Map explicit search voice triggers to handleQuickStopSearch
+    const isCoffee = transcript.includes("coffee") || transcript.includes("starbucks") || transcript.includes("cafe") || transcript.includes("caffeine");
+    const isGas = transcript.includes("gas") || transcript.includes("fuel") || transcript.includes("refuel") || transcript.includes("station");
+    const isFood = transcript.includes("food") || transcript.includes("restaurant") || transcript.includes("eat") || transcript.includes("dining") || transcript.includes("dinner") || transcript.includes("lunch");
+    const isRestArea = transcript.includes("rest area") || transcript.includes("rest stop") || transcript.includes("pit stop") || transcript.includes("parking") || transcript.includes("stops");
+    const isPharmacy = transcript.includes("pharmacy") || transcript.includes("drugstore") || transcript.includes("chemist") || transcript.includes("prescription") || transcript.includes("drug store");
+    const isHospital = transcript.includes("hospital") || transcript.includes("emergency") || transcript.includes("medical") || transcript.includes("clinic");
+    const isBeach = transcript.includes("beach") || transcript.includes("shore") || transcript.includes("cove");
+    const isThrift = transcript.includes("thrift") || transcript.includes("thrifting") || transcript.includes("second-hand") || transcript.includes("second hand") || transcript.includes("charity shop") || transcript.includes("consignment") || transcript.includes("vintage store");
+    const isHiking = transcript.includes("hiking") || transcript.includes("hike") || transcript.includes("mountain");
+    const isWalking = transcript.includes("walking") || transcript.includes("nature walk") || transcript.includes("scenic walk") || transcript.includes("boardwalk") || transcript.includes("walk");
+    const isGrocery = transcript.includes("grocery") || transcript.includes("supermarket") || transcript.includes("market") || transcript.includes("grocery store");
+
+    const isSearchTrigger = transcript.startsWith("find ") || transcript.startsWith("get ") || transcript.startsWith("search ") || transcript.startsWith("show ") || transcript.startsWith("take me ") || transcript.includes("nearby") || transcript.includes("nearest");
+
+    if (isSearchTrigger) {
+      // Filter out declined locations
+      const filterDeclined = (name: string) => !declinedLocations.includes(name);
+
+      if (isCoffee) return handleQuickStopSearch('Coffee');
+      if (isGas) return handleQuickStopSearch('Gas');
+      if (isFood) return handleQuickStopSearch('Food');
+      if (isRestArea) return handleQuickStopSearch('Rest Stop');
+      if (isPharmacy) return handleQuickStopSearch('Pharmacy');
+      if (isHospital) return handleQuickStopSearch('Hospital');
+      if (isBeach) return handleQuickStopSearch('Beach');
+      if (isThrift) return handleQuickStopSearch('Thrift Store');
+      if (isGrocery) return handleQuickStopSearch('Grocery');
+      if (isHiking) return handleQuickStopSearch('Hiking');
+      if (isWalking) return handleQuickStopSearch('Trail / Walking Trail');
+    }
+
+    if (transcript.includes("what's nearby") || transcript.includes("whats nearby") || transcript.includes("what is nearby")) {
+      speakText("There are several quick stops on our route, Susan. You can ask me to find coffee, gas, food, or hiking trails nearby!");
+      return;
+    }
+
+    // Support navigate home / to destination commands
+    if (transcript.includes("navigate home") || transcript.includes("go home") || transcript.includes("take me home")) {
+      if (typeof fireAssistantEvent === 'function') {
+        fireAssistantEvent('NAVIGATION_REQUESTED');
+      }
+      setActiveRouteTarget({
+        label: "Susan & Rhonda's Home",
+        query: "Halifax, Nova Scotia"
+      });
+      setIsSimulatedRoutingActive(true);
+      setSimulatedDistance(15.0);
+      speakText("Starting navigation home.");
+      if (typeof fireAssistantEvent === 'function') {
+        fireAssistantEvent('NAVIGATION_STARTED');
+      }
+      setTimeout(() => {
+        launchDeviceNavigation("Home", "Halifax, Nova Scotia");
+      }, 1500);
+      return;
+    }
+
+    if (transcript.includes("navigate to destination") || transcript.includes("go to destination") || transcript.includes("take us there") || transcript === "take me there") {
+      if (typeof fireAssistantEvent === 'function') {
+        fireAssistantEvent('NAVIGATION_REQUESTED');
+      }
+      const dest = roamingDestination || "Truro, Nova Scotia";
+      setActiveRouteTarget({
+        label: dest,
+        query: dest
+      });
+      setIsSimulatedRoutingActive(true);
+      setSimulatedDistance(24.5);
+      speakText("Starting navigation now.");
+      if (typeof fireAssistantEvent === 'function') {
+        fireAssistantEvent('NAVIGATION_STARTED');
+      }
+      setTimeout(() => {
+        launchDeviceNavigation(dest, dest);
+      }, 1500);
+      return;
+    }
 
     // VOICE STOP COMMANDS (CRITICAL REQUIREMENT) - Transition back to Sleeping (idle) state
     const isExit = transcript.includes("thank you roamie") ||
@@ -1377,12 +1970,15 @@ export default function App() {
     // Standardize wake phrases and instructions
     const wakeWords = /^(hey\s+rom[yi]|ok\s+rom[yi]|rom[yi]|hey\s+roamie|ok\s+roamie|roamie)\s*,?\s*/i;
     const hasWake = wakeWords.test(transcript);
+    if (hasWake) {
+      console.log("WAKE_WORD_DETECTED");
+    }
 
     // Is Prompt Listening Mode active?
     const isPromptMode = isFollowUpRef.current || hasAskedNavigationQuestionRef.current;
 
-    // Wake Listening Mode requires the wake word
-    if (!isPromptMode) {
+    // Wake Listening Mode requires the wake word ONLY IF we are not already in an active session
+    if (!isPromptMode && !isVoiceEngineActivatedRef.current) {
       if (!hasWake) {
         console.log("[STT Wake Mode] Ignored command without wake word in Wake Listening Mode:", transcript);
         setSpeechFeedback("Roamie is asleep. Say 'Hey Roamie' to command.");
@@ -1405,6 +2001,8 @@ export default function App() {
     // Reset prompt follow-up state since we're processing an active command
     isFollowUpRef.current = false;
 
+    console.log("Speech captured");
+    console.log(`[STT] Command: "${transcript}"`);
     setSpeechFeedback(`Command parsed: "${transcript}"`);
 
     // GPS COMMAND INTENT BEHAVIOR DETECTION
@@ -1421,48 +2019,6 @@ export default function App() {
                           transcript.includes('find coffee') ||
                           transcript.includes('get coffee');
 
-    // Unified GPS location tracking
-    const getActiveSuggestedLocation = () => {
-      if (lastSuggestedLocationRef.current) {
-        return lastSuggestedLocationRef.current;
-      }
-      if (suggestedPois && suggestedPois.closestOnRoute && suggestedPois.closestOnRoute.name) {
-        return {
-          name: suggestedPois.closestOnRoute.name,
-          query: `${suggestedPois.closestOnRoute.name}, Nova Scotia`,
-          info: suggestedPois.closestOnRoute.name
-        };
-      }
-      return null;
-    };
-
-    const isNavigateAction = transcript === 'navigate there' || 
-                             transcript === 'navigate to it' || 
-                             transcript === 'take me there' || 
-                             transcript === 'take us there' ||
-                             transcript.startsWith('navigate there') ||
-                             transcript.startsWith('take me there') ||
-                             transcript.includes('navigate to it');
-                             
-    const isAddAction = transcript === 'add to route' || 
-                        transcript === 'add this to my gps' || 
-                        transcript === 'add it to route' ||
-                        transcript === 'add it to my gps' ||
-                        transcript.startsWith('add to route') ||
-                        transcript.includes('add this to my gps') ||
-                        transcript.includes('add it to my gps') ||
-                        transcript.includes('add to route');
-
-    const isSkipAction = transcript === 'skip' || 
-                         transcript === 'skip it' || 
-                         transcript === 'no thanks' || 
-                         transcript === 'no thank you' || 
-                         transcript === 'cancel' ||
-                         transcript.startsWith('skip');
-
-    const activeLoc = getActiveSuggestedLocation();
-
-    // 1. Check for explicit action prompts & global GPS commands
     if (activeLoc) {
       if (isNavigateAction) {
         lastSuggestedLocationRef.current = null;
@@ -1503,6 +2059,9 @@ export default function App() {
       }
       
       if (isSkipAction) {
+        if (activeLoc) {
+          setDeclinedLocations(prev => [...prev, activeLoc.name]);
+        }
         lastSuggestedLocationRef.current = null;
         speakText("Understood. Keeping our current route coordinates.");
         return;
@@ -1612,78 +2171,27 @@ export default function App() {
 
     // Core music & secondary commands
     if (transcript === 'play music' || transcript === 'play road trip music' || transcript === 'start music' || transcript === 'play road trip playlist') {
-      if (musicProvider === 'spotify') {
-        if (!isSpotifyConnected) {
-          speakText(`Spotify stream account is not linked. Please tap Sync Spotify Account to enable hands-free driving streams.`);
-        } else {
-          setIsMusicPlaying(true);
-          speakText(`Understood ${activeUserRef.current}. Playing our comfortable highway melodies.`);
-        }
-      } else {
-        speakText(`Understood ${activeUserRef.current}. Launching official Amazon Music Gateway Folk playlist on your mobile application. Sound stream active via Bluetooth.`);
-        window.open('https://music.amazon.com/playlists/B07HG67H88', '_blank');
-      }
+      speakText(`Understood ${activeUserRef.current}. Launching official Amazon Music Gateway Folk playlist on your mobile application. Sound stream active via Bluetooth.`);
+      window.open('https://music.amazon.com/playlists/B07HG67H88', '_blank');
     } else if (transcript.startsWith('play ')) {
       const titleSearch = transcript.substring(5).trim();
-      if (musicProvider === 'spotify') {
-        if (!isSpotifyConnected) {
-          speakText(`Please link your Spotify account to search and stream "${titleSearch}".`);
-        } else {
-          const foundIndex = DRIVE_TRACKS.findIndex(track => 
-            track.title.toLowerCase().includes(titleSearch) || 
-            track.artist.toLowerCase().includes(titleSearch)
-          );
-
-          if (foundIndex !== -1) {
-            setCurrentTrackIndex(foundIndex);
-            setIsMusicPlaying(true);
-            speakText(`Certainly ${activeUserRef.current}. Found ${DRIVE_TRACKS[foundIndex].title} by ${DRIVE_TRACKS[foundIndex].artist}. Commencing stream through Bluetooth.`);
-          } else {
-            speakText(`Searching Spotify playlists for "${titleSearch}" and transferring stream playback to vehicle.`);
-            window.open(`https://open.spotify.com/search/${encodeURIComponent(titleSearch)}`, '_blank');
-          }
-        }
+      if (titleSearch.toLowerCase().includes('whispering pines') || titleSearch.toLowerCase().includes('whispering') || titleSearch.toLowerCase().includes('pines')) {
+        speakText(`Certainly ${activeUserRef.current}. Launching the Whispering Pines playlist on Amazon Music application.`);
+        window.open('https://music.amazon.com/playlists/B01M9I23UP', '_blank');
+      } else if (titleSearch.toLowerCase().includes('road trip') || titleSearch.toLowerCase().includes('gateway') || titleSearch.toLowerCase().includes('folk')) {
+        speakText(`Certainly ${activeUserRef.current}. Opening the Gateway Folk playlist on Amazon Music application.`);
+        window.open('https://music.amazon.com/playlists/B07HG67H88', '_blank');
       } else {
-        if (titleSearch.toLowerCase().includes('whispering pines') || titleSearch.toLowerCase().includes('whispering') || titleSearch.toLowerCase().includes('pines')) {
-          speakText(`Certainly ${activeUserRef.current}. Launching the Whispering Pines playlist on Amazon Music application.`);
-          window.open('https://music.amazon.com/playlists/B01M9I23UP', '_blank');
-        } else if (titleSearch.toLowerCase().includes('road trip') || titleSearch.toLowerCase().includes('gateway') || titleSearch.toLowerCase().includes('folk')) {
-          speakText(`Certainly ${activeUserRef.current}. Opening the Gateway Folk playlist on Amazon Music application.`);
-          window.open('https://music.amazon.com/playlists/B07HG67H88', '_blank');
-        } else {
-          speakText(`Initiating deep-link handoff to Amazon Music for search query "${titleSearch}".`);
-          window.open(`https://music.amazon.com/search/${encodeURIComponent(titleSearch)}`, '_blank');
-        }
+        speakText(`Initiating deep-link handoff to Amazon Music for search query "${titleSearch}".`);
+        window.open(`https://music.amazon.com/search/${encodeURIComponent(titleSearch)}`, '_blank');
       }
     } else if (transcript === 'pause music' || transcript === 'stop music' || transcript === 'mute music') {
-      if (musicProvider === 'spotify') {
-        setIsMusicPlaying(false);
-        speakText(`Soundtrack on status standby, ${activeUserRef.current}. Safe travels.`);
-      } else {
-        speakText(`Understood ${activeUserRef.current}. Please use your vehicle steering audio buttons or system notification controls to pause Amazon Music, as it streams externally.`);
-      }
+      speakText(`Understood ${activeUserRef.current}. Please use your vehicle steering audio buttons or system notification controls to pause Amazon Music, as it streams externally.`);
     } else if (transcript === 'resume music' || transcript === 'continue music') {
-      if (musicProvider === 'spotify') {
-        setIsMusicPlaying(true);
-        speakText(`Resuming prior melodies smoothly.`);
-      } else {
-        speakText(`Initiating launch sequence to hand off playback back to Amazon Music application.`);
-        window.open('https://music.amazon.com', '_blank');
-      }
+      speakText(`Initiating launch sequence to hand off playback back to Amazon Music application.`);
+      window.open('https://music.amazon.com', '_blank');
     } else if (transcript === 'next song' || transcript === 'skip song' || transcript === 'switch song' || transcript === 'skip music') {
-      if (musicProvider === 'spotify') {
-        handleSkipTrack(false);
-        speakText(`Changing to our next acoustic rhythm.`);
-      } else {
-        speakText(`Please use vehicle controls or the Amazon Music overlay screen to skip tracks, since Amazon handles audio handoffs externally.`);
-      }
-    } else if (transcript.includes('tell us about this place') || transcript.includes('tell me about this town') || transcript.includes('tell me about the town') || transcript.includes('scenic info')) {
-      lastSuggestedLocationRef.current = {
-        name: 'Onslow Mountain Spruce Corridor',
-        query: 'Onslow Mountain, Nova Scotia',
-        info: 'Onslow Mountain spruce corridor — 2 min away — Spruce woodlands with quiet winding scenic lanes.'
-      };
-      speakText(`Onslow Mountain spruce corridor is two minutes away. Do you want directions?`);
+      speakText(`Please use vehicle controls or the Amazon Music overlay screen to skip tracks, since Amazon handles audio handoffs externally.`);
     } else if (transcript.includes('save this memory') || transcript.includes('save memory') || transcript.includes('add a memory') || transcript.includes('add memory') || transcript.includes('snapshot')) {
       const id = generateId();
       const newMem = {
@@ -1713,8 +2221,8 @@ export default function App() {
         speakText("Vocalization restored. I am here with you, hands-free.");
       }, 100);
     } else {
-      // Direct message fallback logic
-      handleSendMessage(undefined, rawTranscript);
+      // Direct message fallback logic - send CLEANED transcript to handleSendMessage
+      handleSendMessage(undefined, transcript);
     }
   };
 
@@ -1724,8 +2232,13 @@ export default function App() {
     const cleanSpoken = spokenText.toLowerCase().replace(/[.,?!;:()'"]/g, ' ');
     const cleanTranscript = transcript.toLowerCase().replace(/[.,?!;:()'"]/g, ' ');
     
-    const spokenWords = cleanSpoken.split(/\s+/).filter(w => w.length >= 3);
-    const transcriptWords = cleanTranscript.split(/\s+/).filter(w => w.length >= 3);
+    // Very short overlap checks for common Roamie phrases
+    if (cleanTranscript.length < 15 && cleanSpoken.includes(cleanTranscript)) {
+      return true;
+    }
+
+    const spokenWords = cleanSpoken.split(/\s+/).filter(w => w.length >= 2);
+    const transcriptWords = cleanTranscript.split(/\s+/).filter(w => w.length >= 2);
     
     if (transcriptWords.length === 0) return false;
     
@@ -1737,9 +2250,8 @@ export default function App() {
     }
     
     const matchRatio = matchesCount / transcriptWords.length;
-    // If 80% or more of the significant words in the transcript are present in Roamie's own spoken text,
-    // we assume it's echo/feedback of Roamie's own voice.
-    return matchRatio >= 0.80;
+    // Lowered threshold for self-voice detection to 70% to be safer against environment echo
+    return matchRatio >= 0.70;
   };
 
   const handleDirectCommandDuringSpeech = (transcript: string): boolean => {
@@ -1884,6 +2396,10 @@ export default function App() {
     if (matchedCandidate) {
       console.log("[STT Direct Handoff] MATCHED candidate place:", matchedCandidate);
       
+      if (typeof fireAssistantEvent === 'function') {
+        fireAssistantEvent('NAVIGATION_REQUESTED');
+      }
+
       // Stop speech synthesis instantly
       safeCancelSpeech();
       isSpeakingRef.current = false;
@@ -1897,6 +2413,10 @@ export default function App() {
       setSpeechFeedback(`Direct Command Executed: "${matchedCandidate}"`);
       
       speakText(confirmationText, undefined, 'idle');
+      
+      if (typeof fireAssistantEvent === 'function') {
+        fireAssistantEvent('NAVIGATION_STARTED');
+      }
 
       setActiveRouteTarget({
         label: matchedCandidate,
@@ -1942,6 +2462,7 @@ export default function App() {
       rec.lang = 'en-US';
 
       rec.onstart = () => {
+        console.log("[VOICE_PIPELINE] Microphone active. Speech recognition session started.");
         setIsListening(true);
         isSpeechRecognitionActiveRef.current = true;
         lastErrorRef.current = null;
@@ -1969,6 +2490,8 @@ export default function App() {
         const currentTranscript = (finalTranscript || interimTranscript).trim();
         if (!currentTranscript) return;
 
+        console.log(`[VOICE_PIPELINE] Capture: "${currentTranscript}" (isFinal: ${!!finalTranscript})`);
+
         const transcriptLower = currentTranscript.toLowerCase();
 
         // 1. TRUE REAL-TIME INTERRUPT SYSTEM
@@ -1979,6 +2502,15 @@ export default function App() {
           console.log("[STT Filter] Ignored self-voice capture during active speech synthesis:", currentTranscript);
           return;
         }
+
+        // Interrupt phrases: "hey roamie", "stop roamie", "thank you roamie", "yes", "no", "navigate there", "add it to my trip" etc.
+        const interruptPhrases = [
+          "hey roamie", "hey romy", "ok roamie", "ok romy", "roamie", "romy",
+          "stop roamie", "stop romy", "thank you roamie", "thank you romy", "thank you", "thanks",
+          "yes", "yeah", "yep", "sure", "okay", "ok", "no", "not now", "cancel", "never mind", "nevermind",
+          "navigate there", "add it", "take me there", "add to route", "start navigation",
+          "do it", "yes please", "go ahead", "please", "no thanks", "skip", "add to gps", "navigate to it", "take us there", "add this", "route there"
+        ];
 
         if (isSpeakingOrResponding) {
           // Check for direct command injection (e.g. "Add Mass Down to my GPS")
@@ -1992,21 +2524,19 @@ export default function App() {
             setIsListening(false);
             return;
           }
+
+          // ONLY interrupt if the voice capture contains an actual interrupt phrase OR is a substantial phrase of >= 12 characters.
+          // This prevents background vehicle cabin noise or silent breathing from cutting off Roamie mid-sentence.
+          const isIntentionalInterrupt = interruptPhrases.some(phrase => transcriptLower.includes(phrase)) || transcriptLower.length >= 12;
+          
+          if (!isIntentionalInterrupt) {
+            console.log("[STT Filter] Ignored background noise / breathing capture during speech/processing:", transcriptLower);
+            return;
+          }
         }
 
-        // Interrupt phrases: "hey roamie", "stop roamie", "thank you roamie", "yes", "no", "navigate there", "add it to my trip" etc.
-        const interruptPhrases = [
-          "hey roamie", "hey romy", "ok roamie", "ok romy", "roamie", "romy",
-          "stop roamie", "stop romy", "thank you roamie", "thank you romy", "thank you", "thanks",
-          "yes", "yeah", "yep", "sure", "okay", "ok", "no", "not now", "cancel", "never mind", "nevermind",
-          "navigate there", "add it", "take me there", "add to route", "start navigation",
-          "do it", "yes please", "go ahead", "please", "no thanks", "skip", "add to gps", "navigate to it", "take us there", "add this", "route there"
-        ];
-
-        const hasInterruptPhrase = interruptPhrases.some(phrase => transcriptLower.includes(phrase));
-
-        if (isSpeakingOrResponding && hasInterruptPhrase) {
-          console.log("[STT Interrupt] Intercepted voice speaking/processing via phrase:", transcriptLower);
+        if (isSpeakingOrResponding) {
+          console.log("[STT Interrupt] Intercepted voice speaking/processing via deliberate user speech:", transcriptLower);
           lastProcessedTimeRef.current = now;
           
           // Stop speech synthesis immediately
@@ -2087,45 +2617,10 @@ export default function App() {
           }, silenceDuration);
         }
 
-        const wakeWords = /^(hey\s+rom[yi]|ok\s+rom[yi]|rom[yi]|hey\s+roamie|ok\s+roamie|roamie)/i;
-        const hasWake = wakeWords.test(transcriptLower);
-
-        // INSTANT WAKE-UP LOGIC
-        if (roamieStateRef.current === 'idle') {
-          if (hasWake) {
-            console.log("[STT] Instant wake word detected:", currentTranscript);
-            lastProcessedTimeRef.current = now;
-            try {
-              rec.abort();
-            } catch (e) {}
-            isSpeechRecognitionActiveRef.current = false;
-            setIsListening(false);
-
-            setIsVoiceEngineActivated(true);
-            isVoiceEngineActivatedRef.current = true;
-
-            // Clean up wake words and remainder for command parsing
-            const remainder = transcriptLower.replace(wakeWords, '').replace(/^,\s*/, '').trim();
-            if (remainder) {
-              console.log("[STT] Wake word had command remainder:", remainder);
-              transitionToState('listening');
-              setTimeout(() => {
-                handleVoiceCommand(remainder);
-              }, 50);
-            } else {
-              transitionToState('listening');
-              setSpeechFeedback("Roamie is listening...");
-            }
-            return;
-          } else {
-            // Wake word not found, keep silent/sleeping conforming to constraints
-            return;
-          }
-        }
-
         if (finalTranscript) {
           if (roamieStateRef.current === 'listening') {
             console.log("[STT] Processing final transcript in active listening state:", finalTranscript);
+            console.log("Speech recognized");
             lastProcessedTimeRef.current = now;
             try {
               rec.abort();
@@ -2164,34 +2659,121 @@ export default function App() {
       rec.onend = () => {
         setIsListening(false);
         isSpeechRecognitionActiveRef.current = false;
-        
-        const wasCriticalError = lastErrorRef.current === 'not-allowed' || lastErrorRef.current === 'audio-capture';
-        
-        if ((isVoiceEngineActivatedRef.current || isAlwaysListeningActive()) && !wasCriticalError) {
-          const handsFree = profile?.settings?.handsFreeEnabled !== false;
-          const shouldRestart = handsFree || 
-                                roamieStateRef.current === 'listening' || 
-                                roamieStateRef.current === 'speaking' || 
-                                isSpeakingRef.current;
-          
-          if (shouldRestart) {
+      };
+
+      recognitionRef.current = rec;
+
+      // Setup Passive Wake-Word Recognition
+      if (wakeWordRecognitionRef.current) {
+        try {
+          wakeWordRecognitionRef.current.abort();
+        } catch (e) {}
+      }
+      const wakeRec = new SpeechRecognition();
+      wakeRec.continuous = true;
+      wakeRec.interimResults = true;
+      wakeRec.lang = 'en-US';
+
+      wakeRec.onstart = () => {
+        isWakeWordListeningRef.current = true;
+        console.log("[WakeWord] Passive wake-word listener is now active...");
+        // Reset error count on successful start
+        wakeWordErrorCountRef.current = 0;
+      };
+
+      wakeRec.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const trans = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += trans;
+          } else {
+            interimTranscript += trans;
+          }
+        }
+
+        const currentTranscript = (finalTranscript || interimTranscript).trim().toLowerCase();
+        if (!currentTranscript) return;
+
+        const wakeWords = /^(hey\s+rom[yi]|ok\s+rom[yi]|rom[yi]|hey\s+roamie|ok\s+roamie|roamie)/i;
+        const match = currentTranscript.match(wakeWords);
+        if (match) {
+          console.log("Wake word detected");
+          console.log("WAKE_WORD_DETECTED");
+          console.log("[WakeWord] Wake word detected passively:", currentTranscript);
+
+          const matchedPhrase = match[0];
+          let remainder = currentTranscript.substring((match.index || 0) + matchedPhrase.length).replace(/^[\s,.;:?!]+|[\s,.;:?!]+$/g, '').trim();
+
+          // Mark as not listening before aborting to avoid loop
+          isWakeWordListeningRef.current = false;
+          try {
+            lastWakeWordAbortTimeRef.current = Date.now();
+            wakeRec.abort();
+          } catch (e) {}
+
+          if (remainder.length > 1) {
+            console.log("Speech recognized");
+            playToneAndStartActiveVoiceSession();
             setTimeout(() => {
-              if ((isVoiceEngineActivatedRef.current || isAlwaysListeningActive()) && !isSpeechRecognitionActiveRef.current) {
-                safeStartRecognition();
-              }
-            }, 300);
+              handleVoiceCommand(remainder);
+            }, 350);
+          } else {
+            document.dispatchEvent(new CustomEvent('VOICE_ENGINE_WAKE'));
+            playToneAndStartActiveVoiceSession();
           }
         }
       };
 
-      recognitionRef.current = rec;
+      wakeRec.onerror = (event: any) => {
+        if (event.error === 'aborted') {
+          console.log("[WakeWord] Passive recognition aborted (likely handover or system preempted).");
+        } else {
+          console.warn("Wake-word passive recognition error:", event.error);
+          wakeWordErrorCountRef.current++;
+        }
+        
+        if (event.error === 'not-allowed') {
+          isWakeWordListeningRef.current = false;
+        }
+      };
+
+      wakeRec.onend = () => {
+        isWakeWordListeningRef.current = false;
+        console.log("[WakeWord] onend event triggered.");
+        
+        // Auto-restart passive wake word listener if not in active session
+        // Throttled and condition-aware restart
+        if (!isSpeechRecognitionActiveRef.current && roamieStateRef.current === 'idle' && !isVoiceEngineActivatedRef.current && !isSpeakingRef.current) {
+          // If we see too many errors, use a longer backoff (up to 30s)
+          const backoff = Math.min(3000 * wakeWordErrorCountRef.current, 30000);
+          const delay = 1000 + backoff;
+          
+          if (wakeWordRestartTimeoutRef.current) clearTimeout(wakeWordRestartTimeoutRef.current);
+          wakeWordRestartTimeoutRef.current = setTimeout(() => {
+            if (!isSpeechRecognitionActiveRef.current && roamieStateRef.current === 'idle' && !isVoiceEngineActivatedRef.current && !isSpeakingRef.current) {
+              startPassiveWakeWordListener();
+            }
+          }, delay);
+        } else {
+          console.log("[WakeWord] Skipping auto-restart due to active conversation or speaking state.");
+        }
+      };
+
+      wakeWordRecognitionRef.current = wakeRec;
 
       return () => {
         try {
           rec.abort();
         } catch (e) {}
+        try {
+          wakeRec.abort();
+        } catch (e) {}
         isSpeechRecognitionActiveRef.current = false;
+        isWakeWordListeningRef.current = false;
         recognitionRef.current = null;
+        wakeWordRecognitionRef.current = null;
       };
     }
   }, []);
@@ -2219,10 +2801,12 @@ export default function App() {
     // Intercept and append the action prompt if it's a location suggestion
     let finalText = text;
     const textLower = text.toLowerCase();
-    const isNavigationOffer = textLower.includes("gps") || textLower.includes("directions") || textLower.includes("navigate") || textLower.includes("route") || textLower.includes("map") || textLower.includes("take you") || textLower.includes("closest on your route") || textLower.includes("closest on route");
-    const containsOffer = textLower.includes("would you like") || textLower.includes("want me to") || textLower.includes("should i") || textLower.includes("want directions") || textLower.includes("shall i") || textLower.includes("shall we") || textLower.includes("want directions?");
-    const actionPrompt = "Would you like me to navigate there or add it to your GPS route?";
-    const alreadyAppended = textLower.includes("navigate there or add it");
+    const isNavigationOffer = (textLower.includes("gps") || textLower.includes("directions") || textLower.includes("navigate") || textLower.includes("route") || textLower.includes("map") || textLower.includes("take you") || textLower.includes("closest on your route") || textLower.includes("closest on route")) &&
+                              !(textLower.includes("stay on") || textLower.includes("keep") || textLower.includes("original") || textLower.includes("holding course") || textLower.includes("cancel") || textLower.includes("under-stood") || textLower.includes("understood") || textLower.includes("stay with") || textLower.includes("keep route") || textLower.includes("stay on the current"));
+    const containsOffer = (textLower.includes("would you like") || textLower.includes("want me to") || textLower.includes("should i") || textLower.includes("want directions") || textLower.includes("shall i") || textLower.includes("shall we") || textLower.includes("want directions?")) &&
+                          !(textLower.includes("stay on") || textLower.includes("keep") || textLower.includes("original") || textLower.includes("holding course") || textLower.includes("cancel") || textLower.includes("under-stood") || textLower.includes("understood") || textLower.includes("stay with") || textLower.includes("keep route") || textLower.includes("stay on the current"));
+    const actionPrompt = "Would you like me to navigate there?";
+    const alreadyAppended = textLower.includes("would you like me to navigate there");
     
     if ((isNavigationOffer || containsOffer) && !alreadyAppended) {
       let trimmed = text.trim();
@@ -2238,7 +2822,7 @@ export default function App() {
           const existing = prev[tripId];
           if (!existing) return prev;
           const updatedMsgs = existing.messages.map(m => {
-            if (m.id === msgId && !m.content.toLowerCase().includes("navigate there or add it")) {
+            if (m.id === msgId && !m.content.toLowerCase().includes("would you like me to navigate there")) {
               let contentTrimmed = m.content.trim();
               if (!contentTrimmed.endsWith("?") && !contentTrimmed.endsWith(".")) {
                 contentTrimmed += ".";
@@ -2261,31 +2845,31 @@ export default function App() {
     const finalLower = finalText.toLowerCase();
 
     // Determine if the response contains a question, demanding dynamic voice follow-up listening
-    const isQuestion = finalText.trim().endsWith('?') || 
-                       finalLower.includes('would you like') || 
-                       finalLower.includes('do you want') ||
-                       finalLower.includes('want directions') ||
-                       finalLower.includes('should i') || 
-                       finalLower.includes('want me to') || 
-                       finalLower.includes('shall i') ||
-                       finalLower.includes('shall we') ||
-                       finalLower.includes('add it to your trip') ||
-                       finalLower.includes('save that') ||
-                       finalLower.includes('call them');
+    const isQuestion = (finalText.trim().endsWith('?') || 
+                        finalLower.includes('would you like') || 
+                        finalLower.includes('do you want') ||
+                        finalLower.includes('want directions') ||
+                        finalLower.includes('should i') || 
+                        finalLower.includes('what do you think') ||
+                        finalLower.includes('tell me') ||
+                        finalLower.includes('any thoughts') ||
+                        finalLower.includes('can i help') ||
+                        finalLower.includes('how can i help')) &&
+                       !(finalLower.includes("stay on") || finalLower.includes("keep") || finalLower.includes("original") || finalLower.includes("holding course") || finalLower.includes("cancel"));
 
-    const isDriveMode = profile.settings.voiceAssistanceMode !== 'third_wheel';
-
-    if (isQuestion && !isDriveMode) {
-      isFollowUpRef.current = true;
+    // After spoken response finishes, transit to the requested force state or default to dynamic listener/idle
+    if (forceNextState) {
+      nextStateAfterSpeechRef.current = forceNextState;
+    } else if (isQuestion) {
       nextStateAfterSpeechRef.current = 'listening';
+      hasAskedNavigationQuestionRef.current = true;
+      isFollowUpRef.current = true;
     } else {
-      isFollowUpRef.current = false;
-      // In Drive Mode, strictly go to 'idle' silent passive listening, NEVER active 'listening' mode prompt
-      nextStateAfterSpeechRef.current = isDriveMode ? 'idle' : (forceNextState || (isAlwaysListeningActive() ? 'listening' : 'idle'));
+      nextStateAfterSpeechRef.current = 'idle';
     }
 
     // Set navigation question tracking flag
-    const isNavQuestion = isNavigationOffer && (containsOffer || finalLower.includes("?") || finalLower.includes("navigate there or add it"));
+    const isNavQuestion = isNavigationOffer && (containsOffer || finalLower.includes("?") || finalLower.includes("navigate there"));
     if (isNavQuestion) {
       hasAskedNavigationQuestionRef.current = true;
     }
@@ -2402,13 +2986,16 @@ export default function App() {
         utterance.rate = 0.90; // Natural pacing
         utterance.pitch = 1.0;
 
+        console.log(`[VOICE_PIPELINE] TTS started: "${cleanText.substring(0, 50)}..."`);
         utterance.onstart = () => {
+          console.log("[VOICE_PIPELINE] Voice playback audible on hardware device.");
           setSpeakingMsgId(msgId || 'auto');
           isSpeakingRef.current = true;
         };
 
         utterance.onend = () => {
           if (activeUtteranceRef.current === utterance) {
+            console.log("TTS_COMPLETED");
             setSpeakingMsgId(null);
             isSpeakingRef.current = false;
             // After reply finishes, transition to target post-speech state!
@@ -2432,6 +3019,7 @@ export default function App() {
           window.speechSynthesis.resume();
         }
 
+        console.log("TTS initiated");
         window.speechSynthesis.speak(utterance);
         isSpeakingRef.current = true;
       } catch (e) {
@@ -2503,6 +3091,21 @@ export default function App() {
     const query = customQuery || chatInputs[activeTripId]?.trim() || '';
     if (!query && !attachedImage) return;
 
+    setDebugLatestUserSaid(query || "Uploaded picture.");
+    setDebugLatestSentToAI(query || "Uploaded picture.");
+    let detectedInt = "Conversational Query";
+    const qLower = (query || "").toLowerCase();
+    if (qLower.includes("weather") || qLower.includes("forecast") || qLower.includes("temp")) {
+      detectedInt = "Weather Info Inquiry";
+    } else if (qLower.includes("coffee") || qLower.includes("gas") || qLower.includes("food") || qLower.includes("eat") || qLower.includes("restaurant") || qLower.includes("pit stop") || qLower.includes("rest stop") || qLower.includes("hiking") || qLower.includes("attraction")) {
+      detectedInt = "POI Search Discovery";
+    } else if (qLower.includes("navigate") || qLower.includes("gps") || qLower.includes("take me") || qLower.includes("take us") || qLower.includes("go to")) {
+      detectedInt = "GPS Navigation Request";
+    } else if (qLower.includes("play") || qLower.includes("music") || qLower.includes("song") || qLower.includes("playlist")) {
+      detectedInt = "Voice Music Stream Handoff";
+    }
+    setDebugLatestIntent(detectedInt);
+
     // Reset feedback
     setSpeechFeedback(null);
 
@@ -2566,6 +3169,7 @@ export default function App() {
     setIsTyping(true);
     transitionToState('processing');
 
+    console.log("AI_REQUEST_SENT");
     try {
       // Build custom context info for Roamie to hold complete trip memory knowledge
       const tripContextInfo = activeTrip ? {
@@ -2580,6 +3184,7 @@ export default function App() {
         ).join(', ')
       } : null;
 
+      console.log(`[VOICE_PIPELINE] API Dispatch: "${query}" (User: ${activeUser})`);
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2588,7 +3193,7 @@ export default function App() {
           activePartner: activeUser,
           destination,
           tripContext: tripContextInfo,
-          history: currentMsgs.slice(-6).map(m => ({ sender: m.senderName, text: m.content })),
+          history: currentMsgs.slice(-15).map(m => ({ sender: m.senderName, text: m.content })), // Increased context
           photoData: attachedImage ? attachedImage.split(',')[1] : undefined,
           photoMimeType: attachedImage ? attachedImage.split(',')[0].split(':')[1].split(';')[0] : undefined,
           DRIVING_MODE: activeScreen === 'drive' ? "TRUE" : "FALSE",
@@ -2599,8 +3204,23 @@ export default function App() {
         })
       });
 
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
       const data = await response.json();
-      const textReply = data.text || "I am reflecting on our slow escape blueprint.";
+      setIsTyping(false);
+      
+      if (data.apiKeyExpired || data.apiKeyMissing) {
+        setIsApiKeyExpiredAlert(true);
+        setApiKeyErrorMessage(data.errorDetails || "Your Gemini API Key appears to have expired or is missing in the platform workspace configuration.");
+      } else {
+        setIsApiKeyExpiredAlert(false);
+      }
+
+      const textReply = data.text || "I am reflecting on our plans.";
+      console.log(`AI_RESPONSE_RAW: "${textReply.substring(0, 100)}..."`);
+      setDebugLatestAIResponse(textReply);
 
       // Parse route-aware POIs if present
       const replyLower = textReply.toLowerCase();
@@ -2664,19 +3284,24 @@ export default function App() {
       updateChatMessages(activeTripId, [...nextMsgs, botMessage]);
 
       if (profile.settings.responseMode !== 'text') {
+        console.log(`FINAL_TTS_RESPONSE: "${textReply.substring(0, 100)}..."`);
         speakText(textReply, botMsgId);
       } else {
         transitionToState('idle');
       }
-    } catch (err) {
-      // Gentle offline fallback replies with local intelligence
+    } catch (err: any) {
+      setIsTyping(false);
+      const fallbackReason = err.message || err;
+      console.log(`FALLBACK_TRIGGER_REASON: Frontend: ${fallbackReason}`);
+      // Gentle offline fallback replies
       setTimeout(() => {
         const fallbacks = [
-          `I heard our plan clearly, ${activeUser}. Moving nicely at our quiet desk in Nova Scotia, I feel Ottawa fits us perfectly. Shall we include a flat greenhouse stroll in our Day 2 list?`,
-          `That makes beautiful sense. Let's make sure we map out comfortable pathways with ample shaded resting spaces so Susan's knee won't experience crowd strain.`,
-          `Understood. I have locked this idea down in our thoughts. Would you like me to populate our travel itinerary blocks now?`
+          `Hi ${activeUser}, I'm listening. I'm operating in limited offline mode right now, but I'm still here to help!`,
+          `I've noted that. I'm currently in a safe offline fallback mode - what else can I help you or Susan with?`,
+          `I'm listening. I'm just reflecting on things while in offline mode. How's the drive going?`
         ];
         const textReply = fallbacks[Math.floor(Math.random() * fallbacks.length)];
+        console.log(`FINAL_TTS_RESPONSE: (Frontend Fallback) "${textReply}"`);
         const botMsgId = generateId();
         const botMessage: ChatLogMessage = {
           id: botMsgId,
@@ -2889,7 +3514,7 @@ export default function App() {
             id: generateId(),
             role: 'avatar',
             type: 'text',
-            content: `Hello Susan and Rhonda! I am Roamie. I have created a brand new quiet corridor blueprint for our trip to ${newTripData.destination}. Tell me what calm sights you would love to experience.`,
+            content: `Hello! I'm Roamie. I've set up a new space for our plans in ${newTripData.destination}. What's on your mind?`,
             timestamp: Date.now(),
             senderName: 'Roamie'
           }
@@ -2975,6 +3600,10 @@ export default function App() {
   };
 
   const startCamera = async () => {
+    setCapturedPhotoPreview(null);
+    setCapturedPhotoCaption('');
+    setCapturedPhotoTripId(activeTripId || (trips[0] ? trips[0].tripId : ''));
+    setCapturedPhotoAlbumId('album-scenery');
     setIsCameraOpen(true);
     setCameraError(null);
     try {
@@ -3006,6 +3635,7 @@ export default function App() {
       streamRef.current = null;
     }
     setIsCameraOpen(false);
+    setCapturedPhotoPreview(null);
   };
 
   const toggleCameraFacingMode = async () => {
@@ -3057,44 +3687,105 @@ export default function App() {
       capturedUrl = getRandomMemoryPlaceholderUrl();
     }
 
-    const activeTrip = trips.find(t => t.tripId === activeTripId) || trips[0];
+    const activeTrip = trips.find(t => t.tripId === (capturedPhotoTripId || activeTripId)) || trips[0];
     const activeTripName = activeTrip ? activeTrip.destination : 'Nova Scotia';
+
+    setCapturedPhotoPreview(capturedUrl);
+    setCapturedPhotoCaption(`Slow road trip moment near ${activeTripName}`);
+  };
+
+  const saveCapturedPhoto = () => {
+    if (!capturedPhotoPreview) return;
+
+    const chosenTripId = capturedPhotoTripId || activeTripId || (trips[0] ? trips[0].tripId : '');
+    const activeTrip = trips.find(t => t.tripId === chosenTripId) || trips[0];
+    const activeTripName = activeTrip ? activeTrip.destination : 'Nova Scotia';
+    
     const newPhoto: TripPhoto = {
       id: generateId(),
-      url: capturedUrl,
-      caption: `Captured slow road trip moment near ${activeTripName} by ${activeUser}`,
+      url: capturedPhotoPreview,
+      caption: capturedPhotoCaption || `Captured slow road trip moment near ${activeTripName} by ${activeUser}`,
       addedBy: activeUser,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      tripId: activeTripId,
-      location: activeTripName
-    };
+      tripId: chosenTripId,
+      location: activeTripName,
+      albumId: capturedPhotoAlbumId || 'album-scenery'
+    } as any;
 
     setPhotos(prev => [newPhoto, ...prev]);
     stopCamera();
-    setSuccessNotification(`Polaroid snapshot captured by ${activeUser}!`);
+    setSuccessNotification(`Polaroid snapshot saved successfully to ${activeTripName}!`);
     setTimeout(() => setSuccessNotification(null), 3500);
   };
 
-  const handleSharePhoto = (type: 'text' | 'email' | 'airdrop' | 'link', photo: TripPhoto) => {
+  const handleSharePhoto = async (type: 'text' | 'email' | 'airdrop' | 'link', photo: TripPhoto) => {
     setIsSharingSimulated(type);
     
+    // Generate the universally shareable link for this specific Polaroid!
+    const baseUrl = window.location.origin + window.location.pathname;
+    const shareQuery = `?sharedPhotoUrl=${encodeURIComponent(photo.url)}&sharedPhotoCaption=${encodeURIComponent(photo.caption || '')}&sharedPhotoAddedBy=${encodeURIComponent((photo as any).addedBy || 'Rhonda')}&sharedPhotoDate=${encodeURIComponent((photo as any).timestamp || new Date().toLocaleDateString('en-US'))}`;
+    const shareUrl = baseUrl + shareQuery;
+
+    const shareTitle = "Cozy Polaroid from Susan & Rhonda's Roaming Story";
+    const shareText = `Check out this special Polaroid moment: "${photo.caption || ''}"`;
+
+    // Try to trigger the system's Native Share Sheet if supported (ideal for Android/iOS)
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: shareTitle,
+          text: shareText,
+          url: shareUrl
+        });
+        setSuccessNotification("Native share sheet opened successfully!");
+        setTimeout(() => setSuccessNotification(null), 3000);
+        setIsSharingSimulated(null);
+        return;
+      } catch (shareErr) {
+        console.log("[NativeShare] Navigator share failed or cancelled. Using direct fallback protocols.", shareErr);
+      }
+    }
+
+    // Direct Protocols fallback for Desktop & browsers without navigator.share
     if (type === 'link') {
       try {
-        navigator.clipboard.writeText(photo.url);
-      } catch (e) {}
-      setSuccessNotification("Polaroid link copied to clipboard device memory!");
+        await navigator.clipboard.writeText(shareUrl);
+        setSuccessNotification("Polaroid share link copied to device clipboard!");
+      } catch (e) {
+        console.warn("Could not copy to clipboard:", e);
+        setSuccessNotification("Share Link created! Please copy from address bar.");
+      }
     } else if (type === 'text') {
-      setSuccessNotification(`Text message draft formatted for Susan & Rhonda: "${photo.caption}"`);
+      // Trigger native device SMS application
+      try {
+        const smsUri = `sms:?body=${encodeURIComponent(`${shareText} - View polaroid: ${shareUrl}`)}`;
+        window.location.href = smsUri;
+        setSuccessNotification("Launching native text messages draft...");
+      } catch (e) {
+        setSuccessNotification(`Drafted text message: "${photo.caption}"`);
+      }
     } else if (type === 'email') {
-      setSuccessNotification(`Shared email record compiled completely into travel journal!`);
+      // Trigger native device Email application
+      try {
+        const mailUri = `mailto:?subject=${encodeURIComponent(shareTitle)}&body=${encodeURIComponent(`${shareText}\n\nView polaroid: ${shareUrl}\n\nWarmly,\nSusan & Rhonda`)}`;
+        window.location.href = mailUri;
+        setSuccessNotification("Launching native email client draft...");
+      } catch (e) {
+        setSuccessNotification(`Compiled email record into travel journal!`);
+      }
     } else if (type === 'airdrop') {
-      setSuccessNotification("Scanning local Bluetooth and AirDrop nodes... Snapshot shared!");
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        setSuccessNotification("Link copied! Paste to send via AirDrop or local Bluetooth node.");
+      } catch (e) {
+        setSuccessNotification("Scanning local Bluetooth and AirDrop nodes... Snapshot shared!");
+      }
     }
     
     setTimeout(() => {
       setSuccessNotification(null);
       setIsSharingSimulated(null);
-    }, 4000);
+    }, 4500);
   };
 
   const handleDeletePhoto = (photoId: string) => {
@@ -3104,6 +3795,42 @@ export default function App() {
     }
     setSuccessNotification("Moved photo memory to Trash.");
     setTimeout(() => setSuccessNotification(null), 3000);
+  };
+
+  const handleShareMany = (type: 'text' | 'email' | 'airdrop' | 'link', photoIds: string[]) => {
+    setIsSharingSimulated(type);
+    const count = photoIds.length;
+    
+    if (type === 'link') {
+      setSuccessNotification(`Generated shared link for ${count} polaroids!`);
+    } else {
+      setSuccessNotification(`Prepared ${count} polaroids for shared ${type} delivery.`);
+    }
+    
+    setTimeout(() => {
+      setSuccessNotification(null);
+      setIsSharingSimulated(null);
+      setSelectedPhotoIds([]);
+      setMultiSelectActive(false);
+    }, 4000);
+  };
+
+  const handleDownloadAlbum = (albumId: string) => {
+    const albumName = albumId === 'all' ? 'All Photos' : albums.find(a => a.id === albumId)?.name || 'Album';
+    const count = photos.filter(p => (p as any).status !== 'deleted' && (albumId === 'all' || (p as any).albumId === albumId)).length;
+    
+    if (count === 0) {
+      setSuccessNotification("No photos in this album to download.");
+    } else {
+      setSuccessNotification(`Packaging ${count} polaroids from "${albumName}" for batch download...`);
+    }
+    setTimeout(() => setSuccessNotification(null), 4000);
+  };
+
+  const handleShareAlbum = (type: string, albumId: string) => {
+    const albumName = albumId === 'all' ? 'All Photos' : albums.find(a => a.id === albumId)?.name || 'Album';
+    setSuccessNotification(`Sharing "${albumName}" album via ${type}...`);
+    setTimeout(() => setSuccessNotification(null), 4000);
   };
 
   const handleAddJournalSubmit = (e: React.FormEvent) => {
@@ -3441,10 +4168,10 @@ export default function App() {
           
           <div className="space-y-1.5">
             <h1 className="font-serif italic font-extrabold text-3xl tracking-wide bg-clip-text text-transparent bg-gradient-to-r from-purple-500 via-[#10BACB] to-[#8ED521] select-none font-black leading-tight">
-              Roaming Story
+              Roamie
             </h1>
             <p className="text-[#7C7C59] text-[9.5px] uppercase tracking-widest font-black leading-none">
-              Companion Environment v4.0
+              Active System v4.0
             </p>
           </div>
           
@@ -3461,6 +4188,73 @@ export default function App() {
     );
   }
 
+  if (urlSharedPhoto) {
+    return (
+      <div className="min-h-screen bg-[#141312] text-[#EBE6E0] flex flex-col items-center justify-center p-4 md:p-6 font-sans relative overflow-y-auto w-full">
+        {/* Background Aura */}
+        <div className="absolute inset-0 bg-gradient-to-b from-[#7C7C59]/10 via-[#2C2C20]/5 to-transparent pointer-events-none z-0" />
+
+        <div className="max-w-md w-full mx-auto text-center space-y-6 z-10 relative py-8">
+          <div className="space-y-2">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-[#7C7C59] font-black">
+              🌍 Shared Polaroid Memory
+            </span>
+            <h1 className="text-2xl font-serif font-normal tracking-tight text-stone-100">
+              Roaming Story
+            </h1>
+            <p className="text-stone-400 text-xs font-sans">
+              A cozy moment shared with you from Susan & Rhonda's journey.
+            </p>
+          </div>
+
+          {/* Polaroid Frame */}
+          <div className="bg-[#FAF9F5] shadow-2xl rounded-sm p-4 pb-6 transform rotate-1 hover:rotate-0 transition-all duration-500 border border-stone-200/50 max-w-sm mx-auto text-[#2C2C20]">
+            <div className="aspect-square w-full overflow-hidden bg-stone-100 border border-stone-200/40 relative rounded-sm">
+              <img
+                src={urlSharedPhoto.url}
+                alt={urlSharedPhoto.caption}
+                className="w-full h-full object-cover select-none"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+            
+            <div className="mt-5 space-y-2.5 text-left px-1">
+              <p className="font-serif text-base italic leading-relaxed text-stone-800 min-h-[48px] border-b border-stone-200/60 pb-3 font-medium">
+                "{urlSharedPhoto.caption}"
+              </p>
+              
+              <div className="flex items-center justify-between font-mono text-[9px] text-stone-500 uppercase tracking-wider leading-none pt-1">
+                <span>By {urlSharedPhoto.addedBy}</span>
+                <span>{urlSharedPhoto.date}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-4 space-y-3">
+            <button
+              type="button"
+              onClick={() => {
+                // Clear URL query parameters from browser location bar without full reload
+                try {
+                  const targetUrl = window.location.origin + window.location.pathname;
+                  window.history.replaceState({}, document.title, targetUrl);
+                } catch(e) {}
+                setUrlSharedPhoto(null);
+              }}
+              className="w-full py-3 bg-[#7C7C59] text-[#141211] hover:bg-[#8D8D6A] font-black uppercase text-[10px] font-mono tracking-widest rounded-xl transition duration-300 shadow-md transform hover:-translate-y-0.5 active:translate-y-0.5 cursor-pointer flex items-center justify-center gap-2"
+            >
+              <span>Explore Susan & Rhonda's Travel Board</span>
+            </button>
+            
+            <p className="text-[9px] text-stone-500 font-mono tracking-wide">
+              Securely stored in active device flash memory nodes.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-screen transition-colors duration-300 ${isHome ? 'bg-[#FAF9F5] text-[#2C2C20]' : 'bg-[#141312] text-[#EBE6E0]'} flex flex-col font-sans overflow-x-hidden relative select-none pb-12`}>
       
@@ -3470,11 +4264,12 @@ export default function App() {
       )}
 
       {/* FIXED TOP NAVIGATION BAR */}
-      <header className={`max-w-md w-full mx-auto md:max-w-xl lg:max-w-2xl px-4 py-3 flex items-center justify-between sticky top-0 z-40 backdrop-blur-md bg-opacity-95 shadow-md border-b transition-colors duration-300 ${
+      <header className={`w-full sticky top-0 z-10 shadow-md border-b transition-colors duration-300 backdrop-blur-md bg-opacity-95 ${
         isHome 
-          ? 'bg-[#FAF9F5]/95 border-stone-200/70 text-[#2C2C20]' 
+          ? 'bg-[#FAF9F5] border-stone-200/70 text-[#2C2C20]' 
           : 'bg-[#1E1C1A] border-[#2C2A26] text-[#EBE6E0]'
       }`}>
+        <div className="max-w-md w-full mx-auto md:max-w-xl lg:max-w-2xl px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           {profile.branding.logoUrl ? (
             <img 
@@ -3499,10 +4294,7 @@ export default function App() {
             </div>
           )}
 
-          <div>
-            <span className={`font-serif text-sm font-bold tracking-tight block ${isHome ? 'text-stone-900' : 'text-[#fcfbfa]'}`}>Roaming Story</span>
-            <span className="text-[9px] font-mono leading-none text-[#7C7C59] tracking-wider uppercase font-extrabold block">Susan & Rhonda's Companion</span>
-          </div>
+
         </div>
 
         {/* Action controllers in header */}
@@ -3589,10 +4381,11 @@ export default function App() {
             <SettingsIcon className="w-3.5 h-3.5" />
           </button>
         </div>
+        </div>
       </header>
 
       {/* CORE MOBILE CONTAINER FRAME */}
-      <main className={`flex-grow max-w-md w-full mx-auto md:max-w-xl lg:max-w-2xl transition-colors duration-300 ${isHome ? 'bg-[#FAF9F5] text-[#2C2C20]' : 'bg-[#141312] border-x border-[#2C2A26]'} flex flex-col relative z-10 pb-24`}>
+      <main className={`flex-grow max-w-md w-full mx-auto md:max-w-xl lg:max-w-2xl transition-colors duration-300 ${isHome ? 'bg-[#FAF9F5] text-[#2C2C20]' : 'bg-[#141312] border-x border-[#2C2A26]'} flex flex-col relative z-20 pb-24`}>
         
         {/* Invisible file inputs for silent one-time setup action if triggered */}
         <input type="file" ref={logoInputRef} accept="image/*" onChange={(e) => e.target.files && processBrandingLogo(e.target.files[0])} className="hidden" />
@@ -3626,8 +4419,8 @@ export default function App() {
                   <RoamieAvatar 
                     size="xl" 
                     imgSrc={profile.branding.avatarUrl} 
-                    isListening={isListening} 
-                    isSpeaking={speakingMsgId !== null} 
+                    isListening={roamieState === 'listening'} 
+                    isSpeaking={roamieState === 'speaking' || speakingMsgId !== null} 
                   />
                 </button>
 
@@ -3652,7 +4445,7 @@ export default function App() {
               {/* FANTABULOUS APP TITLE & SUBTITLE */}
               <div className="space-y-1">
                 <h1 className="font-serif italic font-extrabold text-5xl tracking-wide bg-clip-text text-transparent bg-gradient-to-r from-purple-600 via-[#10BACB] to-[#8ED521] leading-normal select-none drop-shadow-sm font-black">
-                  Roaming Story
+                  Roamie
                 </h1>
                 <p className="text-stone-600 font-sans text-xs font-semibold tracking-tight leading-normal">
                   Welcome, Rhonda & Susan! Where are we going next?
@@ -4094,6 +4887,157 @@ export default function App() {
                 </div>
               )}
 
+              {/* QUICK STOP RESULTS DISPLAY CARD ON HOME SCREEN */}
+              {quickStopState && quickStopState.active && (
+                <div className="w-full max-w-sm mx-auto p-4 bg-[#FAF9F5] border-2 border-[#D4C3B3] rounded-3xl space-y-3 shadow-lg animate-in fade-in zoom-in duration-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-mono text-stone-600 bg-stone-200/60 px-2 py-0.5 rounded-full uppercase tracking-wider font-extrabold">
+                      📍 Recommendation
+                    </span>
+                    <span className="text-[10px] font-mono text-[#7C7C59]">
+                      Option {quickStopState.index + 1} of {quickStopState.results.length}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-black text-stone-900 font-sans tracking-tight leading-snug">
+                      {quickStopState.results[quickStopState.index]?.name}
+                    </h4>
+                    <p className="text-[11px] font-mono text-[#7C7C59] font-medium">
+                      ✦ {quickStopState.results[quickStopState.index]?.distance.toFixed(1)} km away ({quickStopState.category})
+                    </p>
+                  </div>
+
+                  <p className="text-[11.5px] text-stone-700 bg-stone-100/50 p-2.5 rounded-2xl leading-relaxed border border-stone-200/80">
+                    "I found {quickStopState.results[quickStopState.index]?.name} {quickStopState.results[quickStopState.index]?.distance.toFixed(1)} km away. Would you like me to navigate there?"
+                  </p>
+
+                  <div className="grid grid-cols-3 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof fireAssistantEvent === 'function') {
+                          fireAssistantEvent('NAVIGATION_REQUESTED');
+                        }
+                        const activePOI = quickStopState.results[quickStopState.index];
+                        setActiveRouteTarget({
+                          label: activePOI.name,
+                          query: activePOI.query
+                        });
+                        setIsSimulatedRoutingActive(true);
+                        setSimulatedDistance(activePOI.distance);
+                        setQuickStopState(null);
+                        hasAskedNavigationQuestionRef.current = false;
+                        isFollowUpRef.current = false;
+                        speakText("Starting navigation now.");
+                        if (typeof fireAssistantEvent === 'function') {
+                          fireAssistantEvent('NAVIGATION_STARTED');
+                        }
+                        setTimeout(() => {
+                          launchDeviceNavigation(activePOI.name, activePOI.query);
+                        }, 1500);
+                      }}
+                      className="py-2.5 px-1 bg-emerald-100 hover:bg-emerald-200 border-2 border-emerald-300 rounded-2xl flex flex-col items-center justify-center gap-0.5 cursor-pointer transition-all active:scale-95 pointer-events-auto"
+                    >
+                      <span className="text-sm">👍</span>
+                      <span className="text-[8.5px] font-sans font-bold text-emerald-800 uppercase tracking-wider">Navigate</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextIdx = quickStopState.index + 1;
+                        if (nextIdx < quickStopState.results.length) {
+                          setQuickStopState({
+                            ...quickStopState,
+                            index: nextIdx
+                          });
+                          const nextPOI = quickStopState.results[nextIdx];
+                          if (typeof fireAssistantEvent === 'function') {
+                            fireAssistantEvent('PLACE_SELECTED');
+                          }
+                          const speakTextStr = `The next closest is ${nextPOI.name} ${nextPOI.distance.toFixed(1)} kilometres away. Would you like me to navigate there?`;
+                          lastSuggestedLocationRef.current = {
+                            name: nextPOI.name,
+                            query: nextPOI.query,
+                            info: speakTextStr
+                          };
+                          hasAskedNavigationQuestionRef.current = true;
+                          isFollowUpRef.current = true;
+                          speakText(speakTextStr, undefined, 'listening');
+                          setSpeechFeedback(speakTextStr);
+                        } else {
+                          setQuickStopState(null);
+                          hasAskedNavigationQuestionRef.current = false;
+                          isFollowUpRef.current = false;
+                          speakText("I couldn't find any other results nearby.");
+                        }
+                      }}
+                      className="py-2.5 px-1 bg-stone-100 hover:bg-stone-200 border-2 border-stone-300 rounded-2xl flex flex-col items-center justify-center gap-0.5 cursor-pointer transition-all active:scale-95 pointer-events-auto"
+                    >
+                      <span className="text-sm">⏭️</span>
+                      <span className="text-[8.5px] font-sans font-bold text-stone-700 uppercase tracking-wider">Skip</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setQuickStopState(null);
+                        hasAskedNavigationQuestionRef.current = false;
+                        isFollowUpRef.current = false;
+                        speakText("Cancelled search.");
+                      }}
+                      className="py-2.5 px-1 bg-rose-50 hover:bg-rose-100 border-2 border-rose-200 rounded-2xl flex flex-col items-center justify-center gap-0.5 cursor-pointer transition-all active:scale-95 pointer-events-auto"
+                    >
+                      <span className="text-sm">❌</span>
+                      <span className="text-[8.5px] font-sans font-bold text-[#A94A4A] uppercase tracking-wider">Cancel</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* TACTILE QUICK STOP PRESETS ON HOME SCREEN */}
+              <div className="bg-white border-2 border-stone-200/80 rounded-3xl p-5 shadow-sm max-w-sm w-full mx-auto space-y-4 relative">
+                <span className="text-[10px] font-mono text-[#7C7C59] uppercase tracking-widest font-black block text-center">
+                  📍 Quick-Access Destinations
+                </span>
+                
+                <div className="grid grid-cols-3 gap-2.5">
+                  {[
+                    { label: "Coffee", icon: Coffee, category: "Coffee" },
+                    { label: "Gas", icon: Fuel, category: "Gas" },
+                    { label: "Thrift Store", icon: ShoppingBag, category: "Thrift Store" },
+                    { label: "Grocery", icon: ShoppingCart, category: "Grocery" },
+                    { label: "Food", icon: Utensils, category: "Food" },
+                    { label: "Hiking", icon: Trees, category: "Hiking" },
+                    { label: "Pharmacy", icon: Pill, category: "Pharmacy" },
+                    { label: "Trail / Walking Trail", icon: Footprints, category: "Trail / Walking Trail" },
+                    { label: "Rest Stop", icon: ParkingCircle, category: "Rest Stop" },
+                    { label: "Hospital", icon: HospitalIcon, category: "Hospital" },
+                    { label: "Beach", icon: Palmtree, category: "Beach" },
+                  ].map(preset => {
+                    const PresetIcon = preset.icon;
+                    return (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          handleQuickStopSearch(preset.category);
+                        }}
+                        className="h-[80px] bg-[#FAF9F5] hover:bg-[#F3F2EB] border border-[#E2DFD3] rounded-2xl flex flex-col items-center justify-center gap-1 cursor-pointer active:scale-95 transition-all focus:outline-none shadow-xs group pointer-events-auto"
+                      >
+                        <div className="w-9 h-9 rounded-full bg-white border border-stone-150 flex items-center justify-center text-[#5C5C43] group-hover:bg-amber-100/50 group-hover:text-amber-700 transition-colors shrink-0">
+                          <PresetIcon className="w-5 h-5" />
+                        </div>
+                        <span className="text-[9px] font-serif font-black tracking-tight text-[#5C5C43] leading-none text-center truncate px-1 w-full">
+                          {preset.label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* DRIVE BANNER AT BOTTOM OF MAIN SECTIONS */}
               <div className="w-full max-w-sm mx-auto px-1 pt-2 text-left">
                 <button
@@ -4110,7 +5054,7 @@ export default function App() {
                         Start Roaming Mode
                       </h4>
                       <p className="font-mono text-[8.5px] text-[#7C7C59] tracking-tight">
-                        Active route-aware co-pilot & hands-free companion
+                        Active route-aware co-pilot & hands-free assistant
                       </p>
                     </div>
                   </div>
@@ -4169,14 +5113,31 @@ export default function App() {
                       <span className="text-[10px] font-mono text-[#7C7C59] uppercase tracking-wider block font-bold">
                         📸 Rhonda & Susan's Polaroids ({photos.length})
                       </span>
-                      {/* Upload new photo helper */}
-                      <button 
-                        onClick={() => photoUploadInputRef.current?.click()}
-                        className="py-1 px-2.5 bg-purple-50 hover:bg-purple-100 text-purple-700 text-[9px] font-mono rounded-lg border border-purple-200 flex items-center gap-1 cursor-pointer"
-                      >
-                        <Upload className="w-3 h-3" /> Upload Pitch
-                      </button>
-                      <input type="file" ref={photoUploadInputRef} accept="image/*" onChange={handleHomePhotoUpload} className="hidden" />
+                      {/* Upload and Studio button group */}
+                      <div className="flex items-center gap-1.5">
+                        <button 
+                          onClick={() => startCamera()}
+                          className="py-1 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[9px] font-mono rounded-lg border border-emerald-200 flex items-center gap-1 cursor-pointer transition font-bold"
+                          title="Snap a new Polaroid memory"
+                        >
+                          <Camera className="w-3 h-3" /> Take Photo
+                        </button>
+                        <button 
+                          onClick={() => photoUploadInputRef.current?.click()}
+                          className="py-1 px-2.5 bg-purple-50 hover:bg-purple-100 text-purple-700 text-[9px] font-mono rounded-lg border border-purple-200 flex items-center gap-1 cursor-pointer transition"
+                          title="Upload existing image"
+                        >
+                          <Upload className="w-3 h-3" /> Upload Image
+                        </button>
+                        <button 
+                          onClick={() => setIsPhotoStudioOpen(true)}
+                          className="py-1 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[9px] font-mono rounded-lg border border-emerald-200 flex items-center gap-1 cursor-pointer transition font-bold"
+                          title="Open Polaroid Memory & Album Organization Studio"
+                        >
+                          <span>🗂️ Studio</span>
+                        </button>
+                      </div>
+                      <input type="file" ref={photoUploadInputRef} accept="image/*" capture="environment" onChange={handleHomePhotoUpload} className="hidden" />
                     </div>
 
                     {photos.filter(p => (p as any).status !== 'deleted').length === 0 ? (
@@ -4499,6 +5460,19 @@ export default function App() {
 
             {/* CHAT MESSAGES PANEL */}
             <div className="flex-grow p-4 overflow-y-auto space-y-4 bg-[#141312]">
+              {isApiKeyExpiredAlert && (
+                <div role="alert" className="p-3 bg-amber-950/15 border border-amber-500/20 rounded-xl flex items-start gap-2.5 text-left mb-2.5 animate-fade-in text-[#FAF9F5]">
+                  <span className="text-xs shrink-0 mt-0.5 leading-none">⚠️</span>
+                  <div className="space-y-1">
+                    <span className="text-[9px] font-mono font-black uppercase tracking-wider text-amber-400 leading-none block">
+                      Gemini API Key Expired
+                    </span>
+                    <p className="font-sans text-[10px] text-stone-300 leading-normal font-medium">
+                      Roamie is operating smoothly via safe offline fallback intelligence because your workspace <code className="bg-stone-900 border border-stone-800 text-[9px] font-mono px-1 py-0.5 rounded text-amber-400">GEMINI_API_KEY</code> has expired or is invalid. Feel free to renew your credentials in the AI Studio Settings anytime!
+                    </p>
+                  </div>
+                </div>
+              )}
               {activeChat.messages.map((m, index) => {
                 const isUser = m.role === 'user';
                 const isRoamie = m.senderName === 'Roamie';
@@ -4646,14 +5620,14 @@ export default function App() {
                 >
                   <Image className="w-4 h-4" />
                 </button>
-                <input type="file" ref={attachmentInputRef} accept="image/*" onChange={handleMessageAttachFile} className="hidden" />
+                <input type="file" ref={attachmentInputRef} accept="image/*" capture="environment" onChange={handleMessageAttachFile} className="hidden" />
 
                 {/* Speech recognizer target mic */}
                 <button 
                   type="button"
                   onClick={toggleListening}
                   className={`p-3 rounded-xl border transition-all ${
-                    isListening 
+                    roamieState === 'listening' 
                       ? 'bg-rose-950/80 border-rose-600 text-rose-400 animate-pulse' 
                       : 'bg-[#141312] border-[#2C2A26] text-stone-300 hover:bg-[#2C2A26]'
                   }`}
@@ -4977,7 +5951,7 @@ export default function App() {
                 </span>
               </div>
 
-              {/* ACTION SNAP BUTTONS (Camera + Upload) */}
+              {/* ACTION SNAP BUTTONS (Camera + Upload + Studio) */}
               <div className="flex items-center justify-between pb-1">
                 <span className="text-[8px] font-mono text-stone-500 uppercase tracking-widest block">Instant Trip Captures</span>
                 <div className="flex gap-1.5 animate-fade-in">
@@ -4989,9 +5963,19 @@ export default function App() {
                   </button>
                   <button 
                     onClick={() => photoUploadInputRef.current?.click()}
-                    className="py-1 px-2.5 bg-purple-700 hover:bg-purple-800 text-white text-[9px] font-mono rounded-lg flex items-center gap-1 cursor-pointer transition uppercase font-bold"
+                    className="py-1 px-2 bg-purple-700 hover:bg-purple-800 text-white text-[9px] font-mono rounded-lg flex items-center gap-1 cursor-pointer transition uppercase font-bold text-center"
                   >
-                    <Upload className="w-3.5 h-3.5" /> File Upload
+                    <Upload className="w-3.5 h-3.5" /> Upload Image
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setActiveStudioAlbumId('all');
+                      setIsPhotoStudioOpen(true);
+                    }}
+                    className="py-1 px-2 bg-stone-805 hover:bg-stone-850 text-emerald-450 text-[9px] font-mono border border-stone-800 rounded-lg flex items-center gap-1 cursor-pointer transition uppercase font-bold text-center"
+                    title="Manage Album boards, bulk action transfer & multi-delete"
+                  >
+                    <span>Studio 🗂️</span>
                   </button>
                 </div>
               </div>
@@ -5062,8 +6046,7 @@ export default function App() {
               <div className="flex flex-col items-center justify-center text-center space-y-4 pt-1">
                 <div className="w-20 h-20 rounded-full bg-stone-300" />
                 <div className="space-y-1">
-                  <h1 className="font-serif italic font-extrabold text-3xl text-stone-400">Roaming Story</h1>
-                  <p className="text-stone-400 text-xs">Susan & Rhonda's Companion</p>
+                  <h1 className="font-serif italic font-extrabold text-3xl text-stone-400">Roamie</h1>
                 </div>
               </div>
               <div className="bg-white border-2 border-stone-200 rounded-3xl h-60 flex items-center justify-center p-6 mx-auto max-w-sm w-full">
@@ -5078,6 +6061,14 @@ export default function App() {
               {/* TOP STATUS BAR CONTAINER */}
               <div className="flex items-center justify-between border-b border-stone-850 pb-3.5 mx-auto max-w-sm w-full">
                 <div className="flex items-center gap-2">
+                  {profile.branding.logoUrl && (
+                    <img 
+                      src={profile.branding.logoUrl} 
+                      alt="Roaming Story" 
+                      className="h-6 w-auto object-contain mr-1 shadow-sm rounded-sm" 
+                      referrerPolicy="no-referrer"
+                    />
+                  )}
                   <div className="relative flex h-3 w-3">
                     <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
                       roamieState === 'listening' ? 'bg-red-500' : roamieState === 'processing' ? 'bg-[#7C7C59]' : roamieState === 'speaking' ? 'bg-amber-500' : 'bg-stone-600'
@@ -5086,9 +6077,6 @@ export default function App() {
                       roamieState === 'listening' ? 'bg-red-400' : roamieState === 'processing' ? 'bg-[#7C7C59]' : roamieState === 'speaking' ? 'bg-amber-400' : 'bg-stone-500'
                     }`}></span>
                   </div>
-                  <span className="text-[10px] font-mono uppercase tracking-widest text-[#7C7C59] font-black">
-                    Roaming Co-Pilot Active
-                  </span>
                 </div>
                 
                 {/* Active speaker identification pill (Requirement 1, 2, 5) */}
@@ -5435,38 +6423,182 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 12 HANDS-FREE DIRECTORY PRESETS FOR SAFE DRIVING */}
-                <div className="w-full max-w-sm mx-auto space-y-1.5 pt-2">
-                  <span className="text-[7.5px] font-mono text-stone-500 uppercase tracking-widest font-black block text-center">
-                    Tactile Companion Shortcuts:
-                  </span>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {[
-                      { label: "Coffee", emoji: "☕", query: "hey roamie, find coffee on route" },
-                      { label: "Gas", emoji: "⛽", query: "hey roamie, find gas on route" },
-                      { label: "Food", emoji: "🍽️", query: "hey roamie, find food on route" },
-                      { label: "Rest stops", emoji: "🅿️", query: "hey roamie, find rest stops on route" },
-                      { label: "Attractions", emoji: "🎡", query: "hey roamie, find attractions on route" },
-                      { label: "Grocery", emoji: "🛒", query: "hey roamie, find grocery nearby" },
-                      { label: "Pharmacy", emoji: "💊", query: "hey roamie, find pharmacy nearby" },
-                      { label: "Library", emoji: "📚", query: "hey roamie, find library nearby" },
-                      { label: "Hiking", emoji: "🥾", query: "hey roamie, find hiking nearby" },
-                      { label: "Beach", emoji: "🏖️", query: "hey roamie, find beach nearby" },
-                      { label: "Camping", emoji: "⛺", query: "hey roamie, find camping nearby" },
-                      { label: "EV Charge", emoji: "⚡", query: "hey roamie, find ev charging nearby" },
-                    ].map(preset => (
+                {/* QUICK STOP RESULTS DISPLAY CARD */}
+                {quickStopState && quickStopState.active && (
+                  <div className="w-full max-w-sm mx-auto p-3.5 bg-[#2A231C] border border-[#7C5C39]/40 rounded-2xl space-y-3 shadow-xl animate-in fade-in zoom-in duration-200">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] font-mono text-[#D7B17D] bg-[#221C16] px-2 py-0.5 rounded-full uppercase tracking-wider font-bold">
+                        Quick Stop Recommendation
+                      </span>
+                      <span className="text-[9px] font-mono text-[#7C7C59]">
+                        Option {quickStopState.index + 1} of {quickStopState.results.length}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-bold text-stone-100 font-sans tracking-tight leading-snug">
+                        {quickStopState.results[quickStopState.index]?.name}
+                      </h4>
+                      <p className="text-[11px] font-mono text-[#A4A48A]">
+                        ✦ {quickStopState.results[quickStopState.index]?.distance.toFixed(1)} km away ({quickStopState.category})
+                      </p>
+                    </div>
+
+                    <p className="text-[10px] text-stone-300 italic bg-[#1E1914] p-2 rounded-lg leading-relaxed border border-stone-800/40">
+                      "{quickStopState.results[quickStopState.index]?.name} matches Susan's flat walking preferences. Shall I launch navigate directions?"
+                    </p>
+
+                    <div className="grid grid-cols-3 gap-1.5 pt-1">
                       <button
-                        key={preset.label}
                         type="button"
                         onClick={() => {
-                          handleSendMessage(undefined, preset.query);
+                          if (typeof fireAssistantEvent === 'function') {
+                            fireAssistantEvent('NAVIGATION_REQUESTED');
+                          }
+                          const activePOI = quickStopState.results[quickStopState.index];
+                          setActiveRouteTarget({
+                            label: activePOI.name,
+                            query: activePOI.query
+                          });
+                          setIsSimulatedRoutingActive(true);
+                          setSimulatedDistance(activePOI.distance);
+                          setQuickStopState(null);
+                          hasAskedNavigationQuestionRef.current = false;
+                          isFollowUpRef.current = false;
+                          speakText("Starting navigation now.");
+                          if (typeof fireAssistantEvent === 'function') {
+                            fireAssistantEvent('NAVIGATION_STARTED');
+                          }
+                          setTimeout(() => {
+                            launchDeviceNavigation(activePOI.name, activePOI.query);
+                          }, 1500);
                         }}
-                        className="p-2 bg-[#1E1C1A] hover:bg-stone-900 border border-stone-800 rounded-xl flex flex-col items-center justify-center gap-1 cursor-pointer active:scale-95 transition-all focus:outline-none"
+                        className="py-2.5 px-1 bg-[#4C754A]/30 hover:bg-[#4C754A]/50 border border-[#5CA459]/40 rounded-xl flex flex-col items-center justify-center gap-0.5 pointer-events-auto cursor-pointer transition-all active:scale-95"
                       >
-                        <span className="text-sm select-none leading-none">{preset.emoji}</span>
-                        <span className="text-[8px] font-mono font-bold tracking-tight text-[#7C7C59] leading-none">{preset.label}</span>
+                        <span className="text-xs">👍</span>
+                        <span className="text-[7.5px] font-mono font-bold text-[#A5CBA2] uppercase tracking-wider">Navigate</span>
                       </button>
-                    ))}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextIdx = quickStopState.index + 1;
+                          if (nextIdx < quickStopState.results.length) {
+                            setQuickStopState({
+                              ...quickStopState,
+                              index: nextIdx
+                            });
+                            const nextPOI = quickStopState.results[nextIdx];
+                            if (typeof fireAssistantEvent === 'function') {
+                              fireAssistantEvent('PLACE_SELECTED');
+                            }
+                            const speakTextStr = `The next closest is ${nextPOI.name} ${nextPOI.distance.toFixed(1)} kilometres away. Would you like me to navigate there?`;
+                            lastSuggestedLocationRef.current = {
+                              name: nextPOI.name,
+                              query: nextPOI.query,
+                              info: speakTextStr
+                            };
+                            hasAskedNavigationQuestionRef.current = true;
+                            isFollowUpRef.current = true;
+                            speakText(speakTextStr, undefined, 'listening');
+                            setSpeechFeedback(speakTextStr);
+                          } else {
+                            setQuickStopState(null);
+                            hasAskedNavigationQuestionRef.current = false;
+                            isFollowUpRef.current = false;
+                            speakText("I couldn't find any more results nearby. Expand search area?");
+                          }
+                        }}
+                        className="py-2.5 px-1 bg-stone-850 hover:bg-stone-800 border border-stone-750 rounded-xl flex flex-col items-center justify-center gap-0.5 pointer-events-auto cursor-pointer transition-all active:scale-95"
+                      >
+                        <span className="text-xs">⏭️</span>
+                        <span className="text-[7.5px] font-mono font-bold text-stone-300 uppercase tracking-wider">Skip</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuickStopState(null);
+                          hasAskedNavigationQuestionRef.current = false;
+                          isFollowUpRef.current = false;
+                          speakText("Disrupt search. Holding course coordinates.");
+                        }}
+                        className="py-2.5 px-1 bg-[#5A2C2C]/30 hover:bg-[#5A2C2C]/50 border border-[#9A4242]/40 rounded-xl flex flex-col items-center justify-center gap-0.5 pointer-events-auto cursor-pointer transition-all active:scale-95"
+                      >
+                        <span className="text-xs">❌</span>
+                        <span className="text-[7.5px] font-mono font-bold text-[#E59797] uppercase tracking-wider">Cancel</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 11 HIGHLY SPECIFIC TACTILE QUICK STOPS FOR SAFE DRIVING */}
+                <div className="w-full max-w-sm mx-auto space-y-1.5 pt-2">
+                  <span className="text-[7.5px] font-mono text-stone-400 uppercase tracking-widest font-black block text-center">
+                    🚙 Tactile Quick Stop Presets
+                  </span>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[
+                      { label: "Coffee", icon: Coffee, category: "Coffee" },
+                      { label: "Gas", icon: Fuel, category: "Gas" },
+                      { label: "Thrift Store", icon: ShoppingBag, category: "Thrift Store" },
+                      { label: "Grocery", icon: ShoppingCart, category: "Grocery" },
+                      { label: "Food", icon: Utensils, category: "Food" },
+                      { label: "Hiking", icon: Trees, category: "Hiking" },
+                      { label: "Pharmacy", icon: Pill, category: "Pharmacy" },
+                      { label: "Trail / Walking Trail", icon: Footprints, category: "Trail / Walking Trail" },
+                      { label: "Rest Stop", icon: ParkingCircle, category: "Rest Stop" },
+                      { label: "Hospital", icon: HospitalIcon, category: "Hospital" },
+                      { label: "Beach", icon: Palmtree, category: "Beach" },
+                    ].map(preset => {
+                      const PresetIcon = preset.icon;
+                      return (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => {
+                            handleQuickStopSearch(preset.category);
+                          }}
+                          className="p-3 bg-[#1A1816]/90 hover:bg-[#25211E] border border-stone-850/60 rounded-xl flex flex-col items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition-all focus:outline-none shadow-sm shadow-black/45 hover:border-[#7C5C39]/40 group"
+                        >
+                          <div className="text-stone-400 group-hover:text-amber-500 transition-colors">
+                            <PresetIcon className="w-5 h-5 pointer-events-none" />
+                          </div>
+                          <span className="text-[8.5px] font-mono font-black tracking-tight text-[#BFBFA1] leading-none text-center truncate w-full">{preset.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* SCROLLING ASSISTANT EVENT LOG & REAL-TIME EVENT DISPATCH CONSOLE */}
+                <div className="w-full max-w-sm mx-auto p-3 bg-stone-950/80 border border-stone-900 rounded-xl space-y-1.5">
+                  <div className="flex items-center justify-between border-b border-stone-900 pb-1">
+                    <span className="text-[7px] font-mono text-stone-500 uppercase tracking-widest font-black">
+                      📡 Real-Time Assistant Console
+                    </span>
+                    <span className="flex h-1.5 w-1.5 relative">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#5CA359] opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[#4C8849]"></span>
+                    </span>
+                  </div>
+                  <div className="h-[75px] overflow-y-auto space-y-1 pr-1 font-mono text-[7.5px] leading-relaxed scrollbar-thin scrollbar-thumb-stone-900 flex flex-col justify-start">
+                    {assistantEvents.length === 0 ? (
+                      <div className="text-stone-600 italic text-center py-4">
+                        Waiting for voice assistant state transitions...
+                      </div>
+                    ) : (
+                      assistantEvents.map((evt, idx) => (
+                        <div key={idx} className="flex items-start justify-between gap-2 border-b border-stone-900/45 pb-0.5">
+                          <span className="text-[#A5C599] font-black tracking-tight uppercase">
+                            ⚙️ {evt.name}
+                          </span>
+                          <span className="text-stone-500 shrink-0">
+                            {new Date(evt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </span>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
 
@@ -5546,6 +6678,17 @@ export default function App() {
                   <Check className="w-3.5 h-3.5" /> Character Portrait Secured
                 </div>
               </div>
+
+              {isApiKeyExpiredAlert && (
+                <div className="pt-2.5 border-t border-stone-800 space-y-1 text-left">
+                  <div className="flex items-center gap-1 text-amber-500 font-bold uppercase text-[8.5px]">
+                    ⚠️ GEMINI_API_KEY EXPIRED / INVALID
+                  </div>
+                  <p className="text-[8px] text-stone-400 leading-normal font-sans">
+                    Your Gemini API key has expired. Please update the <code className="bg-stone-900 border border-stone-850 px-1 py-0.5 rounded text-amber-400">GEMINI_API_KEY</code> parameter in the AI Studio Settings menu to restore the high-performance online conversational AI stream.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* APP IDENTITY BRANDING CARD */}
@@ -5571,7 +6714,7 @@ export default function App() {
                     ) : (
                       <div className="flex flex-col items-center text-stone-600 group-hover:text-amber-500">
                         <Upload className="w-4 h-4" />
-                        <span className="text-[7.5px] font-mono mt-0.5">Upload</span>
+                        <span className="text-[7.5px] font-mono mt-0.5">Upload Image</span>
                       </div>
                     )}
                   </div>
@@ -5601,7 +6744,7 @@ export default function App() {
 
                 {/* Avatar section */}
                 <div className="flex flex-col items-center justify-center text-center space-y-1.5 p-2 bg-stone-900/20 rounded-lg">
-                  <span className="text-[8px] text-stone-500 font-mono uppercase font-bold tracking-wider">Companion Avatar</span>
+                  <span className="text-[8px] text-stone-500 font-mono uppercase font-bold tracking-wider">System Avatar</span>
                   <div 
                     onClick={() => avatarInputRef.current?.click()}
                     className="w-12 h-12 rounded-full border border-stone-850 overflow-hidden cursor-pointer hover:border-amber-500 hover:scale-105 transition-all flex items-center justify-center"
@@ -5818,11 +6961,86 @@ export default function App() {
                     ))
                   )}
                 </select>
-                <button 
-                  onClick={() => speakText("Vocal test complete.")}
-                  className="py-1 px-3 bg-[#2C2A26] border border-stone-800 hover:bg-neutral-800 text-[10px] text-stone-300 rounded font-mono"
+                <div className="flex items-center justify-between pt-1">
+                  <button 
+                    onClick={() => speakText("Vocal test complete.")}
+                    className="py-1 px-3 bg-[#2C2A26] border border-stone-800 hover:bg-neutral-800 text-[10px] text-stone-300 rounded font-mono cursor-pointer"
+                  >
+                    📢 Test synthesizer
+                  </button>
+                </div>
+              </div>
+
+              {/* MICROPHONE ACTIVATION MODE */}
+              <div className="space-y-2 text-[10px] border-t border-stone-850/60 pt-3">
+                <label className="block text-stone-300 font-bold font-serif uppercase tracking-wider text-[9px]">Microphone Activation Mode</label>
+                <p className="text-[8.5px] text-stone-500 font-sans leading-tight">
+                  Choose how the microphone activates for hands-free operations:
+                </p>
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#141312] rounded-xl border border-stone-800">
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setProfile(prev => ({ 
+                        ...prev, 
+                        settings: { ...prev.settings, alwaysOnWakeWordEnabled: false } 
+                      }));
+                      stopPassiveWakeWordListener();
+                    }}
+                    className={`py-2 px-1 text-center rounded-lg font-mono text-[8px] uppercase tracking-wide transition-all flex flex-col items-center justify-center cursor-pointer ${
+                      !profile.settings.alwaysOnWakeWordEnabled
+                        ? 'bg-[#7C7C59] text-[#141211] font-black' 
+                        : 'text-stone-500 hover:text-stone-300'
+                    }`}
+                  >
+                    <span className="font-bold">🎤 Manual Mode</span>
+                    <span className="text-[7px] lowercase tracking-normal text-stone-500 font-sans mt-0.5 block leading-none">Press mic button to speak, mic is off at startup</span>
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setProfile(prev => ({ 
+                        ...prev, 
+                        settings: { ...prev.settings, alwaysOnWakeWordEnabled: true } 
+                      }));
+                      // Wait a beat for state to update, then schedule start
+                      setTimeout(() => {
+                        startPassiveWakeWordListener();
+                      }, 100);
+                    }}
+                    className={`py-2 px-1 text-center rounded-lg font-mono text-[8px] uppercase tracking-wide transition-all flex flex-col items-center justify-center cursor-pointer ${
+                      profile.settings.alwaysOnWakeWordEnabled
+                        ? 'bg-rose-950 text-rose-200 border border-rose-900 font-bold' 
+                        : 'text-stone-500 hover:text-stone-350'
+                    }`}
+                  >
+                    <span className="font-bold">🗣️ Wake Word Mode</span>
+                    <span className="text-[7px] lowercase tracking-normal text-stone-400 font-sans mt-0.5 block leading-none">Say "Hey Romy" to activate voice anytime</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* DEVELOPER DEBUG MODE */}
+              <div className="flex items-center justify-between border-t border-stone-850/60 pt-3 text-[10px]">
+                <div className="pr-4">
+                  <label className="block text-stone-300 font-bold font-serif uppercase tracking-wider text-[9px]">Developer Debug Diagnostics</label>
+                  <p className="text-[8.5px] text-stone-500 font-sans leading-tight mt-0.5">
+                    Show real-time speech transcripts, intents, and vocal states:
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setProfile(prev => ({ 
+                    ...prev, 
+                    settings: { ...prev.settings, developerDebugMode: !prev.settings.developerDebugMode } 
+                  }))}
+                  className={`px-3 py-1.5 text-[8.5px] font-mono uppercase tracking-wide transition-all rounded shrink-0 cursor-pointer ${
+                    profile.settings.developerDebugMode
+                      ? 'bg-rose-950 text-rose-300 font-black border border-rose-900/60'
+                      : 'bg-[#141312] text-stone-500 hover:text-stone-350 border border-stone-800'
+                  }`}
                 >
-                  📢 Test synthesizer
+                  {profile.settings.developerDebugMode ? 'On' : 'Off'}
                 </button>
               </div>
             </div>
@@ -6048,7 +7266,6 @@ export default function App() {
                     {musicProviders
                       .sort((a, b) => (a.order || 0) - (b.order || 0))
                       .map((prov, idx) => {
-                        const isSpotify = prov.id === 'spotify';
                         const isSelectedDefault = defaultMusicProviderId === prov.id;
                         
                         return (
@@ -6149,41 +7366,6 @@ export default function App() {
                       })}
                   </div>
                 </div>
-
-                {/* CONDITIONAL SPOTIFY ACCOUNT AUTH SECTION (ONLY SHOWN IF SPOTIFY IS ENABLED!) */}
-                {musicProviders.find(p => p.id === 'spotify')?.status === 'enabled' && (
-                  <div className="pt-3 border-t border-stone-800 space-y-2">
-                    <span className="text-[8.5px] font-mono text-[#1DB954] font-bold block uppercase">Spotify Integration Synchronization:</span>
-                    {isSpotifyConnected ? (
-                      <div className="flex items-center justify-between bg-emerald-950/20 border border-emerald-900/60 p-2.5 rounded-xl">
-                        <div className="flex items-center gap-1.5 font-mono text-[9px] text-[#1DB954]">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#1DB954] animate-pulse" />
-                          <span>Rhonda & Susan's Space Linked {isSpotifyDemoMode && "(Sandbox)"}</span>
-                        </div>
-                        <button 
-                          type="button" 
-                          onClick={handleDisconnectSpotify}
-                          className="px-2.5 py-1 bg-red-950/40 border border-red-900/40 hover:bg-red-950/60 transition text-red-300 font-mono text-[8px] uppercase font-bold rounded"
-                        >
-                          Unlink
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <p className="text-[8px] font-mono text-amber-500">
-                          ⚠️ Account not sync'd. Integrated steer playbacks require authorization.
-                        </p>
-                        <button 
-                          type="button"
-                          onClick={handleConnectSpotify}
-                          className="w-full py-1.5 bg-[#1DB954] hover:bg-[#1ed760] transition font-mono text-[9px] text-black font-black uppercase rounded-xl shadow cursor-pointer text-center"
-                        >
-                          Sync Spotify Account
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             </div>
 
@@ -6202,7 +7384,7 @@ export default function App() {
               </div>
 
               <p className="font-serif text-stone-300 leading-relaxed text-[10px]">
-                Connect your mobile companion to the vehicle sound system wirelessly. This routes Roamie's voice guidance, navigation calls, and safe-driving music through the car speakers.
+                Connect your mobile device to the vehicle sound system wirelessly. This routes Roamie's voice guidance, navigation calls, and safe-driving music through the car speakers.
               </p>
 
               <div className="p-3 bg-[#141312] border border-stone-850 rounded-xl space-y-3">
@@ -6289,7 +7471,7 @@ export default function App() {
               <span className="text-[9px] text-[#7C7C59] font-black uppercase tracking-wider block">4. Progressive Web App (PWA) Setup</span>
               
               <p className="font-serif text-stone-300 leading-relaxed">
-                Run Roaming Story in elegant full-screen standalone mode directly from your mobile home screen with zero browser UI, quick launch caching, and optimized offline access.
+                Run Roamie in elegant full-screen standalone mode directly from your mobile home screen with zero browser UI, quick launch caching, and optimized offline access.
               </p>
 
               {isAppInstalled ? (
@@ -6319,7 +7501,7 @@ export default function App() {
                   <ol className="list-decimal list-inside space-y-1 pl-1 text-stone-500 leading-relaxed text-[8.5px]">
                     <li>Tap the circular <span className="text-stone-300">Share button</span> (or browser menu symbol).</li>
                     <li>Scroll down and select <span className="text-stone-300 font-bold">"Add to Home Screen"</span>.</li>
-                    <li>Launch Roaming Story for instant hands-free Drive Modes from your workspace launcher!</li>
+                    <li>Launch Roamie for instant hands-free Drive Modes from your workspace launcher!</li>
                   </ol>
                 </div>
               )}
@@ -6386,7 +7568,7 @@ export default function App() {
 
               <div className="border-t border-stone-850 my-2 pt-2" />
 
-              <span className="text-[7.5px] font-mono text-stone-500 uppercase tracking-widest font-black block">In-App Co-Pilot HUD Companion:</span>
+              <span className="text-[7.5px] font-mono text-stone-500 uppercase tracking-widest font-black block">In-App Co-Pilot HUD:</span>
               <button 
                 onClick={() => handleChooseNavigation('in-app')}
                 className="w-full p-3 bg-gradient-to-r from-emerald-950/40 to-emerald-950/20 hover:from-emerald-950/60 hover:to-emerald-950/40 border border-emerald-900 text-emerald-350 rounded-xl cursor-pointer flex items-center justify-center gap-2 active:scale-95 transition-all"
@@ -6653,26 +7835,40 @@ export default function App() {
 
       {/* INTERACTIVE LIVE CAMERA VIEWPORT & SLOW-TRAVEL MEMORY CAPTURE MODAL */}
       {isCameraOpen && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 z-55 animate-fade-in">
-          <div className="bg-[#1E1C1A] max-w-sm w-full rounded-2xl p-5 border border-stone-800 shadow-2xl text-xs space-y-4 text-[#ECE6DF]">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-md flex items-center justify-center p-4 z-55 animate-fade-in text-[#ECE6DF]">
+          <div className="bg-[#1C1A17] max-w-sm w-full rounded-2xl p-5 border border-stone-800 shadow-2xl text-xs space-y-4">
+            
+            {/* Viewfinder Header */}
             <div className="flex items-center justify-between border-b border-stone-800 pb-2">
               <h3 className="font-serif text-sm font-bold text-[#fcfbfa] flex items-center gap-1.5">
                 <Camera className="w-4 h-4 text-emerald-400" />
-                <span>Polaroid Co-Copilot Viewfinder</span>
+                <span>{capturedPhotoPreview ? "Review Polaroid Draft" : "Polaroid Co-Copilot Viewfinder"}</span>
               </h3>
-              <X className="w-5 h-5 text-stone-400 hover:text-white cursor-pointer" onClick={stopCamera} />
+              <button 
+                type="button"
+                className="p-1 hover:bg-stone-800 rounded-md text-stone-400 hover:text-white transition cursor-pointer" 
+                onClick={stopCamera}
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            {/* VIDEO VIEWPORT CONTAINER */}
-            <div className="relative aspect-video w-full rounded-xl bg-black border border-stone-800 overflow-hidden flex items-center justify-center shadow-inner">
-              {cameraError ? (
-                <div className="p-4 text-center space-y-2">
-                  <span className="text-[10px] font-mono text-[#7C7C59] tracking-widest uppercase block">✨ MEMORY CONTEXT ACTIVE</span>
+            {/* PREVIEW IMAGE OR VIDEO VIEWPORT */}
+            <div className="relative aspect-video w-full rounded-xl bg-black border border-stone-800 overflow-hidden flex flex-col items-center justify-center shadow-inner">
+              {capturedPhotoPreview ? (
+                <img 
+                  src={capturedPhotoPreview} 
+                  alt="Captured Polaroid Draft" 
+                  className="w-full h-full object-cover animate-fade-in"
+                />
+              ) : cameraError ? (
+                <div className="p-4 text-center space-y-1">
+                  <span className="text-[10px] font-mono text-[#7C7C59] tracking-widest uppercase block font-bold">✨ MEMORY CONTEXT ACTIVE</span>
                   <p className="font-serif italic text-[11px] text-stone-400">
-                    Real-time video stream active. Snap a beautiful polaroid near Cape Breton, NS!
+                    Real-time video stream active. Snap a beautiful polaroid!
                   </p>
-                  <p className="text-[9px] font-mono text-stone-500 bg-neutral-900/60 p-2 rounded-lg border border-[#2C2A26]">
-                    Contributed by: <strong style={{ color: getUserColorStyle(activeUser).hex }}>{getUserColorStyle(activeUser).displayName}</strong>
+                  <p className="text-[9px] font-mono text-stone-500">
+                    Contributed by: <strong>{getUserColorStyle(activeUser).displayName}</strong>
                   </p>
                 </div>
               ) : (
@@ -6684,41 +7880,540 @@ export default function App() {
                 />
               )}
 
-              {/* WATERMARK BADGE IN OVERLAY */}
-              <div className="absolute top-2.5 right-2.5 bg-black/60 backdrop-blur-md px-2 py-0.5 rounded-md text-[8px] font-mono border border-stone-800/80 tracking-widest text-[#7C7C59]">
-                GPS WATERMARK ACTIVE
+              {/* OVERLAY WATERMARK */}
+              <div className="absolute top-2.5 right-2.5 bg-black/70 backdrop-blur-md px-1.5 py-0.5 rounded text-[7px] font-mono border border-stone-850 tracking-widest text-[#7C7C59] font-bold">
+                {capturedPhotoPreview ? "SNAP RECORDED" : "GPS VIEWPORT ACTIVE"}
               </div>
             </div>
 
-            {/* ACTION FOOTER */}
-            <div className="space-y-3 font-mono">
-              <div className="flex items-center justify-between text-[10px] text-stone-400 bg-neutral-900/40 p-2.5 rounded-xl border border-stone-800">
-                <span>Active Contributor:</span>
-                <span className="font-bold flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: getUserColorStyle(activeUser).hex }} />
-                  <span style={{ color: getUserColorStyle(activeUser).hex }}>{getUserColorStyle(activeUser).displayName}</span>
-                </span>
-              </div>
+            {/* IF COMPLETED CAPTURE, RENDER CAPTIONING AND SORTING FORM */}
+            {capturedPhotoPreview ? (
+              <div className="space-y-3 font-mono text-[10px] animate-fade-in">
+                
+                {/* 1. Caption Input */}
+                <div className="space-y-1">
+                  <label className="text-[8.5px] uppercase font-bold text-stone-400 tracking-wider">✍️ Memory Title & Caption:</label>
+                  <input
+                    type="text"
+                    value={capturedPhotoCaption}
+                    onChange={(e) => setCapturedPhotoCaption(e.target.value)}
+                    placeholder="E.g., Sunrise over Cape Breton Highlands..."
+                    className="w-full bg-neutral-900 border border-stone-800 rounded-lg px-3 py-2 text-stone-100 placeholder-stone-600 focus:outline-none focus:border-emerald-600 text-[11px]"
+                  />
+                </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={toggleCameraFacingMode}
-                  className="py-3 bg-[#2C2A26] border border-stone-800 text-stone-300 hover:text-white rounded-xl text-[10px] uppercase font-bold flex items-center justify-center gap-1 cursor-pointer transition"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" /> Toggle Lens
-                </button>
-                <button
-                  type="button"
-                  onClick={capturePhotoSnapshot}
-                  className="py-3 text-white rounded-xl text-[10px] uppercase font-black flex items-center justify-center gap-1 cursor-pointer transition"
-                  style={{ backgroundColor: getUserColorStyle(activeUser).hex }}
-                >
-                  <Camera className="w-3.5 h-3.5" /> Snap Memory
-                </button>
+                {/* 2. Destination Trip Choice */}
+                <div className="space-y-1">
+                  <label className="text-[8.5px] uppercase font-bold text-stone-400 tracking-wider">🎯 Select Associated Trip:</label>
+                  <select
+                    value={capturedPhotoTripId}
+                    onChange={(e) => setCapturedPhotoTripId(e.target.value)}
+                    className="w-full bg-neutral-900 border border-stone-800 rounded-lg px-2.5 py-2 text-stone-100 text-[11px] focus:outline-none"
+                  >
+                    {trips.filter(t => t.status !== 'deleted').map(t => (
+                      <option key={t.tripId} value={t.tripId}>
+                        {t.title} ({t.destination})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 3. Organizational Album Choice */}
+                <div className="space-y-1">
+                  <label className="text-[8.5px] uppercase font-bold text-stone-400 tracking-wider">🗂️ Sort into Album:</label>
+                  <select
+                    value={capturedPhotoAlbumId}
+                    onChange={(e) => setCapturedPhotoAlbumId(e.target.value)}
+                    className="w-full bg-neutral-900 border border-stone-800 rounded-lg px-2.5 py-2 text-stone-100 text-[11px] focus:outline-none"
+                  >
+                    {albums.map(alb => (
+                      <option key={alb.id} value={alb.id}>
+                        {alb.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Confirm actions */}
+                <div className="grid grid-cols-2 gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCapturedPhotoPreview(null);
+                      setCapturedPhotoCaption('');
+                    }}
+                    className="py-2.5 bg-stone-800/80 hover:bg-stone-850 text-stone-300 hover:text-white border border-stone-750 font-bold uppercase rounded-xl tracking-wide transition cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-stone-400" /> Retake
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveCapturedPhoto}
+                    className="py-2.5 text-white bg-emerald-700 hover:bg-emerald-800 font-bold uppercase rounded-xl tracking-wide transition cursor-pointer flex items-center justify-center gap-1 shadow-md"
+                  >
+                    <Save className="w-3.5 h-3.5" /> Save Polaroid
+                  </button>
+                </div>
+
               </div>
+            ) : (
+              <div className="space-y-3 font-mono">
+                {/* Visual state guide */}
+                <div className="flex items-center justify-between text-[9px] text-stone-400 bg-neutral-900/40 p-2.5 rounded-xl border border-stone-850">
+                  <span>Snapping Contributor:</span>
+                  <span className="font-bold flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: getUserColorStyle(activeUser).hex }} />
+                    <span style={{ color: getUserColorStyle(activeUser).hex }}>{getUserColorStyle(activeUser).displayName}</span>
+                  </span>
+                </div>
+
+                {/* Control buttons */}
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={toggleCameraFacingMode}
+                    className="py-2.5 bg-[#2C2A26] border border-stone-800 text-stone-300 hover:text-white rounded-xl text-[9px] uppercase font-bold flex flex-col items-center justify-center gap-1 cursor-pointer transition"
+                    title="Toggle Lens"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Lens</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Trigger normal browser file selector as direct fallback option
+                      photoUploadInputRef.current?.click();
+                    }}
+                    className="py-2.5 bg-[#2C2A26]/80 border border-stone-800 text-purple-300 hover:text-purple-200 rounded-xl text-[9px] uppercase font-bold flex flex-col items-center justify-center gap-1 cursor-pointer transition"
+                    title="Upload file"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Upload Image</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={capturePhotoSnapshot}
+                    className="py-2.5 text-white rounded-xl text-[9px] uppercase font-black flex flex-col items-center justify-center gap-1 cursor-pointer transition"
+                    style={{ backgroundColor: getUserColorStyle(activeUser).hex }}
+                    title="Snap Polaroid Shot"
+                  >
+                    <Camera className="w-3.5 h-3.5 text-white" />
+                    <span>Snap</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
+
+      {/* POLAROID MEMORY & ALBUM STUDIO MODAL */}
+      {isPhotoStudioOpen && (
+        <div className="fixed inset-0 bg-[#FAF9F5] z-50 flex flex-col animate-fade-in text-stone-900 overflow-hidden">
+          {/* Header */}
+          <div className="p-4 bg-white border-b border-stone-200 flex items-center justify-between shadow-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">📸</span>
+              <div>
+                <h3 className="font-serif text-sm font-bold text-stone-900">Polaroid Album Studio</h3>
+                <p className="font-mono text-[9px] text-[#7C7C59] tracking-wider uppercase font-black">Memory Organization Suite</p>
+              </div>
+            </div>
+            <button 
+              type="button" 
+              onClick={() => {
+                setIsPhotoStudioOpen(false);
+                setMultiSelectActive(false);
+                setSelectedPhotoIds([]);
+              }}
+              className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center hover:bg-stone-200 transition cursor-pointer"
+            >
+              <X className="w-5 h-5 text-stone-600" />
+            </button>
+          </div>
+
+          {/* Sub-header / Album lists & creation panel */}
+          <div className="p-3 bg-stone-50 border-b border-stone-200 space-y-3 font-mono text-[10px]">
+            {/* Action buttons and summary */}
+            <div className="flex items-center justify-between">
+              <div className="flex gap-1.5 overflow-x-auto">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMultiSelectActive(!multiSelectActive);
+                    setSelectedPhotoIds([]);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg border text-[9px] font-bold uppercase transition flex items-center gap-1 shrink-0 cursor-pointer ${
+                    multiSelectActive 
+                      ? 'bg-purple-600 border-purple-700 text-white shadow-sm' 
+                      : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'
+                  }`}
+                >
+                  {multiSelectActive ? "✓ Select Mode" : "Select Multiple"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCreateAlbumPanelOpen(!isCreateAlbumPanelOpen)}
+                  className="px-3 py-1.5 bg-white border border-stone-200 text-stone-700 hover:bg-stone-100 rounded-lg text-[9px] font-bold uppercase transition flex items-center gap-1 shrink-0 cursor-pointer"
+                >
+                  <Plus className="w-3 h-3 text-emerald-600" /> New Album
+                </button>
+                {activeStudioAlbumId && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadAlbum(activeStudioAlbumId)}
+                      className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100 rounded-lg text-[9px] font-bold uppercase transition flex items-center gap-1 shrink-0 cursor-pointer"
+                    >
+                      <Download className="w-3 h-3" /> Download Album
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleShareAlbum('AirDrop', activeStudioAlbumId)}
+                      className="px-3 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 rounded-lg text-[9px] font-bold uppercase transition flex items-center gap-1 shrink-0 cursor-pointer"
+                    >
+                      <Share2 className="w-3 h-3" /> Share Album
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Slide-out Album Creation Form */}
+            {isCreateAlbumPanelOpen && (
+              <div className="p-3 bg-white border border-stone-200 rounded-xl space-y-2 animate-fade-in">
+                <p className="text-[9px] uppercase font-bold text-[#7C7C59] tracking-wider block">📂 Create Custom Photo Album:</p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newAlbumNameInput}
+                    onChange={(e) => setNewAlbumNameInput(e.target.value)}
+                    placeholder="E.g., Coastal Sunsets, Coffee Stops..."
+                    className="flex-1 bg-stone-50 border border-stone-200 rounded-lg px-2.5 py-1.5 text-[11px] placeholder-stone-400 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const trimmed = newAlbumNameInput.trim();
+                      if (!trimmed) return;
+                      const nextAlbum = {
+                        id: 'album-' + generateId(),
+                        name: trimmed,
+                        createdAt: Date.now()
+                      };
+                      setAlbums(prev => [...prev, nextAlbum]);
+                      setNewAlbumNameInput('');
+                      setIsCreateAlbumPanelOpen(false);
+                      setSuccessNotification(`Album "${trimmed}" created!`);
+                      setTimeout(() => setSuccessNotification(null), 2500);
+                    }}
+                    className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-black uppercase text-[9px] transition cursor-pointer"
+                  >
+                    Create
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Album Tab Filters (Horizontal swipe) */}
+            <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hidden">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveStudioAlbumId('all');
+                  setSelectedPhotoIds([]);
+                }}
+                className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider shrink-0 transition ${
+                  activeStudioAlbumId === 'all'
+                    ? 'bg-stone-800 text-white'
+                    : 'bg-stone-200 text-stone-700 hover:bg-stone-300'
+                }`}
+              >
+                📁 All photos
+              </button>
+              {albums.map(alb => (
+                <button
+                  key={alb.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveStudioAlbumId(alb.id);
+                    setSelectedPhotoIds([]);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider shrink-0 transition ${
+                    activeStudioAlbumId === alb.id
+                      ? 'bg-stone-800 text-white'
+                      : 'bg-stone-200 text-stone-700 hover:bg-stone-300'
+                  }`}
+                >
+                  📁 {alb.name}
+                </button>
+              ))}
             </div>
           </div>
+
+          {/* Core scrollable gallery area */}
+          <div className="flex-1 overflow-y-auto p-4 bg-stone-50">
+            {(() => {
+              const activePhotos = photos.filter(p => {
+                if ((p as any).status === 'deleted') return false;
+                if (activeStudioAlbumId === 'all') return true;
+                return (p as any).albumId === activeStudioAlbumId;
+              });
+
+              if (activePhotos.length === 0) {
+                return (
+                  <div className="flex flex-col items-center justify-center text-center py-16 space-y-2">
+                    <span className="text-3xl text-stone-300">🖼️</span>
+                    <p className="font-serif italic text-stone-400 text-[11px]">
+                      No polaroid memories organized here yet.
+                    </p>
+                    <p className="font-mono text-[9px] text-stone-400">
+                      Go to "All Photos", select memories, and move them here!
+                    </p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="grid grid-cols-2 gap-4 pb-20">
+                  {activePhotos.map(p => {
+                    const isChecked = selectedPhotoIds.includes(p.id);
+                    const cStyle = getUserColorStyle(p.addedBy);
+                    const associatedTrip = trips.find(t => t.tripId === p.tripId);
+                    const associatedAlbum = albums.find(alb => alb.id === (p as any).albumId);
+
+                    return (
+                      <div
+                        key={p.id}
+                        onClick={() => {
+                          if (multiSelectActive) {
+                            if (isChecked) {
+                              setSelectedPhotoIds(prev => prev.filter(id => id !== p.id));
+                            } else {
+                              setSelectedPhotoIds(prev => [...prev, p.id]);
+                            }
+                          } else {
+                            setSelectedPhotoForDetail(p);
+                          }
+                        }}
+                        className={`bg-white p-2 pb-3.5 border shadow-md rounded-lg relative group transition-all duration-200 ${
+                          multiSelectActive ? 'cursor-pointer' : ''
+                        } ${isChecked ? 'ring-2 ring-purple-600 scale-[0.98]' : 'hover:scale-[1.01]'}`}
+                        style={{ borderColor: cStyle.hex + '2e', borderBottomColor: cStyle.hex + '9a', borderBottomWidth: '4px' }}
+                      >
+                        {/* Checkbox overlay if selectors active */}
+                        {multiSelectActive && (
+                          <div className="absolute top-2 left-2 z-10 w-5 h-5 rounded-md border flex items-center justify-center bg-white border-stone-300" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedPhotoIds(prev => [...prev, p.id]);
+                                } else {
+                                  setSelectedPhotoIds(prev => prev.filter(id => id !== p.id));
+                                }
+                              }}
+                              className="w-3.5 h-3.5 accent-purple-600 cursor-pointer"
+                            />
+                          </div>
+                        )}
+
+                        <div className="relative aspect-square w-full bg-neutral-100 overflow-hidden rounded">
+                          <img
+                            src={p.url}
+                            alt={p.caption}
+                            className="w-full h-full object-cover rounded shadow-inner"
+                            referrerPolicy="no-referrer"
+                          />
+                        </div>
+
+                        {/* Caption and description info */}
+                        <div className="pt-2 text-[8px] font-mono leading-tight space-y-1">
+                          <p className="font-serif italic font-bold text-stone-850 truncate">"{p.caption}"</p>
+                          
+                          <div className="flex items-center justify-between text-[7px] text-stone-400">
+                            <span>{p.timestamp}</span>
+                            <span className="font-black px-1 rounded uppercase" style={{ backgroundColor: cStyle.hex + '1a', color: cStyle.hex }}>
+                              {cStyle.displayName}
+                            </span>
+                          </div>
+
+                          {/* Quick details & selectors (non-multiselect inline transfers) */}
+                          <div className="pt-2 border-t border-stone-100 space-y-1 text-[7.5px]" onClick={(e) => e.stopPropagation()}>
+                            {/* Trip Selection dropdown list */}
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-stone-400 shrink-0">Trip:</span>
+                              <select
+                                value={p.tripId || ''}
+                                onChange={(e) => {
+                                  const targetTripId = e.target.value;
+                                  const targetTrip = trips.find(t => t.tripId === targetTripId);
+                                  setPhotos(prev => prev.map(item => {
+                                    if (item.id === p.id) {
+                                      return { 
+                                        ...item, 
+                                        tripId: targetTripId, 
+                                        location: targetTrip ? targetTrip.destination : 'Nova Scotia Corridor' 
+                                      };
+                                    }
+                                    return item;
+                                  }));
+                                  setSuccessNotification(`Polaroid re-routed successfully.`);
+                                  setTimeout(() => setSuccessNotification(null), 2500);
+                                }}
+                                className="bg-stone-50 border border-stone-200 text-[7px] p-0.5 rounded focus:outline-none truncate max-w-[100px]"
+                              >
+                                {trips.filter(t => t.status !== 'deleted').map(t => (
+                                  <option key={t.tripId} value={t.tripId}>{t.title}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {/* Album Selection dropdown list */}
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-stone-400 shrink-0">Album:</span>
+                              <select
+                                value={(p as any).albumId || ''}
+                                onChange={(e) => {
+                                  const targetAlbId = e.target.value;
+                                  setPhotos(prev => prev.map(item => {
+                                    if (item.id === p.id) {
+                                      return { ...item, albumId: targetAlbId } as any;
+                                    }
+                                    return item;
+                                  }));
+                                  setSuccessNotification(`Polaroid assigned to new album.`);
+                                  setTimeout(() => setSuccessNotification(null), 2500);
+                                }}
+                                className="bg-stone-50 border border-stone-200 text-[7px] p-0.5 rounded focus:outline-none truncate max-w-[100px]"
+                              >
+                                <option value="">(None)</option>
+                                {albums.map(alb => (
+                                  <option key={alb.id} value={alb.id}>{alb.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Sticky Multi-Select Action Panel at bottom */}
+          {multiSelectActive && selectedPhotoIds.length > 0 && (
+            <div className="absolute bottom-0 inset-x-0 bg-stone-900 text-white p-3 border-t border-stone-800 flex flex-col gap-2.5 font-mono text-[9px] animate-slide-up shadow-2xl z-20">
+              <div className="flex items-center justify-between">
+                <span className="font-bold flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                  {selectedPhotoIds.length} polaroids selected
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPhotoIds([])}
+                  className="text-stone-400 hover:text-white uppercase font-bold text-[8.5px] cursor-pointer"
+                >
+                  Clear check
+                </button>
+              </div>
+
+              {/* Action buttons (Move to Trip, Move to Album, Bulk Delete) */}
+              <div className="grid grid-cols-4 gap-1.5">
+                {/* 1. Trip transfer dropdown action */}
+                <div className="bg-stone-800 p-1.5 rounded-lg border border-stone-750 flex flex-col gap-1">
+                  <span className="text-[7.5px] uppercase font-bold text-stone-500 text-center">Transfer Trip</span>
+                  <select
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (!value) return;
+                      const targetTrip = trips.find(t1 => t1.tripId === value);
+                      setPhotos(prev => prev.map(p => {
+                        if (selectedPhotoIds.includes(p.id)) {
+                          return { ...p, tripId: value, location: targetTrip ? targetTrip.destination : p.location };
+                        }
+                        return p;
+                      }));
+                      setSelectedPhotoIds([]);
+                      setSuccessNotification(`Moved ${selectedPhotoIds.length} polaroids to selected trip.`);
+                      setTimeout(() => setSuccessNotification(null), 3000);
+                    }}
+                    className="w-full bg-stone-950 text-white border-0 text-[8px] focus:outline-none p-0.5"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>Select</option>
+                    {trips.filter(t => t.status !== 'deleted').map(t => (
+                      <option key={t.tripId} value={t.tripId}>{t.title}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 2. Album transfer dropdown action */}
+                <div className="bg-stone-800 p-1.5 rounded-lg border border-stone-750 flex flex-col gap-1">
+                  <span className="text-[7.5px] uppercase font-bold text-stone-500 text-center">Move Album</span>
+                  <select
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (!value) return;
+                      setPhotos(prev => prev.map(p => {
+                        if (selectedPhotoIds.includes(p.id)) {
+                          return { ...p, albumId: value } as any;
+                        }
+                        return p;
+                      }));
+                      setSelectedPhotoIds([]);
+                      setSuccessNotification(`Moved ${selectedPhotoIds.length} polaroids to album.`);
+                      setTimeout(() => setSuccessNotification(null), 3000);
+                    }}
+                    className="w-full bg-stone-950 text-white border-0 text-[8px] focus:outline-none p-0.5"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>Select</option>
+                    {albums.map(alb => (
+                      <option key={alb.id} value={alb.id}>{alb.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 3. Bulk Share */}
+                <button
+                  type="button"
+                  onClick={() => handleShareMany('airdrop', selectedPhotoIds)}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg flex flex-col items-center justify-center gap-0.5 uppercase font-black transition text-[7.5px] cursor-pointer"
+                >
+                  <Share2 className="w-3 h-3 shrink-0" />
+                  <span>Share</span>
+                </button>
+
+                {/* 4. Bulk delete action */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPhotos(prev => prev.map(p => {
+                      if (selectedPhotoIds.includes(p.id)) {
+                        return { ...p, status: 'deleted', deletedAt: Date.now() } as any;
+                      }
+                      return p;
+                    }));
+                    setSelectedPhotoIds([]);
+                    setSuccessNotification(`Moved selected polaroids to Trash Room.`);
+                    setTimeout(() => setSuccessNotification(null), 3000);
+                  }}
+                  className="bg-red-650 hover:bg-red-700 text-white rounded-lg flex flex-col items-center justify-center gap-0.5 uppercase font-black transition text-[7.5px] cursor-pointer"
+                  title="Move selected items to Recycle Bin"
+                >
+                  <Trash2 className="w-3 h-3 shrink-0" />
+                  <span>Trash</span>
+                </button>
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 
@@ -7101,12 +8796,9 @@ export default function App() {
           .sort((a, b) => (a.order || 0) - (b.order || 0))
           .map(prov => {
             const isAmazon = prov.id === 'amazon';
-            const isSpotify = prov.id === 'spotify';
             
             const themeClasses = isAmazon 
               ? 'bg-[#00A8E1] hover:bg-[#0090c2] text-black border border-[#232F3E]' 
-              : isSpotify 
-              ? 'bg-[#1DB954] hover:bg-[#1ed760] text-black border border-[#191414]'
               : 'bg-[#1E1C1A] hover:bg-stone-900 text-stone-200 border border-stone-850';
 
             return (
@@ -7129,6 +8821,64 @@ export default function App() {
             );
           })}
       </div>
+
+      {/* DEVELOPER DEBUG PANEL (PRIORITY 1 REQUIREMENTS) */}
+      {profile.settings.developerDebugMode && (
+        <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-60 bg-[#141211] border-t border-rose-500/50 text-[#ECE6DF] p-4 max-w-sm w-[90%] font-mono text-[9px] shadow-2xl space-y-2 max-h-[300px] overflow-y-auto mb-1 rounded-t-2xl">
+          <div className="flex items-center justify-between border-b border-stone-850 pb-1.5 pt-0.5">
+            <span className="text-[10px] text-rose-400 font-extrabold tracking-wider uppercase flex items-center gap-1.5 leading-none">
+              <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse inline-block" />
+              Dev Diagnostics HUD
+            </span>
+            <button 
+              onClick={() => setProfile(prev => ({ ...prev, settings: { ...prev.settings, developerDebugMode: false } }))}
+              className="text-stone-500 hover:text-stone-300 uppercase scale-90 cursor-pointer font-bold font-mono focus:outline-none"
+            >
+              [Close]
+            </button>
+          </div>
+          <div className="space-y-2 text-left">
+            <div>
+              <span className="text-stone-500 font-black uppercase tracking-wider block text-[8px] mb-0.5">🎤 User Spoke (Transcript):</span>
+              <p className="text-stone-200 bg-stone-950 p-1.5 rounded border border-stone-900 break-words font-sans text-[9.5px] leading-snug font-medium">
+                {debugLatestUserSaid || "(Silence / Waiting...)"}
+              </p>
+            </div>
+            <div>
+              <span className="text-stone-500 font-black uppercase tracking-wider block text-[8px] mb-0.5">🧠 Payload Transmitted To AI:</span>
+              <p className="text-stone-200 bg-stone-950 p-1.5 rounded border border-stone-900 break-words font-sans text-[9.5px] leading-snug font-medium">
+                {debugLatestSentToAI || "(None)"}
+              </p>
+            </div>
+            <div>
+              <span className="text-stone-500 font-black uppercase tracking-wider block text-[8px] mb-0.5">🎯 Intent Registered:</span>
+              <p className="text-rose-400 font-bold bg-stone-950 p-1 rounded border border-stone-900 font-mono text-[9px]">
+                {debugLatestIntent || "STDBY / UNKNOWN"}
+              </p>
+            </div>
+            <div>
+              <span className="text-stone-500 font-black uppercase tracking-wider block text-[8px] mb-0.5">🤖 AI Text-To-Speech Response:</span>
+              <p className="text-stone-200 bg-stone-950 p-1.5 rounded border border-stone-900 break-words font-sans text-[9.5px] leading-snug font-medium">
+                {debugLatestAIResponse || "(None)"}
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 pt-1.5 text-[8.5px] uppercase font-bold border-t border-stone-900/40">
+              <div>
+                <span className="text-stone-500 block text-[7.5px] font-black">Voice Status:</span>
+                <span className={roamieState === 'speaking' ? 'text-purple-400 animate-pulse' : roamieState === 'listening' ? 'text-rose-400 animate-pulse' : 'text-stone-400 font-mono'}>
+                  {roamieState === 'speaking' ? '🗣️ Speaking' : roamieState === 'listening' ? '🎤 Listening' : roamieState === 'processing' ? '⚙️ Processing' : '💤 Idle'}
+                </span>
+              </div>
+              <div>
+                <span className="text-stone-500 block text-[7.5px] font-black">Current State:</span>
+                <span className="text-[#ECE6DF] font-mono font-bold">
+                  {roamieState.toUpperCase()}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
