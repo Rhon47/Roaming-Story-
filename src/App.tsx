@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { ImageUploader } from './components/ImageUploader';
 import { 
   Volume2, 
   VolumeX, 
@@ -1250,9 +1251,8 @@ export default function App() {
       }
     } catch (err) {
       console.warn("Geolocation in handleQuickStopSearch failed:", err);
-      // Fallback: Onslow Mountain, NS coordinates as failsafe
-      lat = 45.4167;
-      lng = -63.2667;
+      lat = null;
+      lng = null;
     }
 
     setIsTyping(true);
@@ -1273,11 +1273,16 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errJson = await response.json().catch(() => ({}));
+        if (errJson.apiKeyExpired) {
+          setIsApiKeyExpiredAlert(true);
+        }
+        throw new Error(errJson.error || `HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
       setIsTyping(false);
+      setIsApiKeyExpiredAlert(data.apiKeyExpired || false);
 
       if (data.places && data.places.length > 0) {
         const mappedResults = data.places.map((p: any) => ({
@@ -1318,10 +1323,21 @@ export default function App() {
         speakText(fallbackText);
         setSpeechFeedback(fallbackText);
       }
-    } catch (apiError) {
+    } catch (apiError: any) {
       console.error("Quick stop search backend call error:", apiError);
       setIsTyping(false);
-      speakText("I am having trouble connecting to the travel assistant database right now.");
+      const fallbackReason = apiError.message || apiError || "";
+      
+      if (fallbackReason.toLowerCase().includes("expired") || fallbackReason.toLowerCase().includes("invalid") || fallbackReason.toLowerCase().includes("unauthorized") || fallbackReason.toLowerCase().includes("key")) {
+        setIsApiKeyExpiredAlert(true);
+        const speakTextStr = "I had a brief connection interruption, but I'm ready to keep our journey smooth. How can I help you and Susan next?";
+        speakText(speakTextStr);
+        setSpeechFeedback(speakTextStr);
+      } else {
+        const speakTextStr = "I had a brief connection interruption. What would you like to search for next?";
+        speakText(speakTextStr);
+        setSpeechFeedback(speakTextStr);
+      }
     }
   };
 
@@ -2927,6 +2943,8 @@ export default function App() {
         utterance.rate = 0.90; // Natural pacing
         utterance.pitch = 1.0;
 
+        console.log(`[VOICE_PIPELINE] FINAL_TTS_RESPONSE: "${cleanText}"`);
+        console.log(`[VOICE_PIPELINE] FINAL_TTS_TEXT: "${cleanText}"`);
         console.log(`[VOICE_PIPELINE] TTS started: "${cleanText.substring(0, 50)}..."`);
         utterance.onstart = () => {
           console.log("[VOICE_PIPELINE] Voice playback audible on hardware device.");
@@ -3140,6 +3158,7 @@ export default function App() {
         console.warn("Navigator geolocation turned off or refused:", geoErr);
       }
 
+      console.log(`[VOICE_PIPELINE] USER_TRANSCRIPT: "${query}"`);
       console.log(`[VOICE_PIPELINE] API Dispatch: "${query}" (User: ${activeUser})`);
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -3164,19 +3183,28 @@ export default function App() {
 
       if (!response.ok) {
         const errJson = await response.json().catch(() => ({}));
+        if (errJson.apiKeyExpired) {
+          setIsApiKeyExpiredAlert(true);
+        }
         throw new Error(errJson.error || `HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
       setIsTyping(false);
-      setIsApiKeyExpiredAlert(false);
+      setIsApiKeyExpiredAlert(data.apiKeyExpired || false);
 
       const textReply = data.text || "I am reflecting on our plans.";
-      console.log(`AI_RESPONSE_RAW: "${textReply.substring(0, 100)}..."`);
+      
+      console.log(`[VOICE_PIPELINE] USER_REQUEST: "${query}"`);
+      console.log(`[VOICE_PIPELINE] AI_RESPONSE_RAW: "${textReply}"`);
+      console.log(`[VOICE_PIPELINE] FALLBACK_REASON: "None"`);
+      console.log(`[VOICE_PIPELINE] FALLBACK_TEXT: "None"`);
+      
       setDebugLatestAIResponse(textReply);
 
       // Trigger interactive quick-stop map card if backend returned genuine nearby places
       if (data.places && data.places.length > 0) {
+        console.log(`[VOICE_PIPELINE] TOOL_RESULT: ${JSON.stringify(data.places)}`);
         const mappedResults = data.places.map((p: any) => ({
           name: p.place_name,
           distance: p.distance_km,
@@ -3202,6 +3230,8 @@ export default function App() {
 
         hasAskedNavigationQuestionRef.current = true;
         isFollowUpRef.current = true;
+      } else {
+        console.log(`[VOICE_PIPELINE] TOOL_RESULT: None`);
       }
 
       if (data.intent === 'navigate' && data.destination) {
@@ -3224,23 +3254,33 @@ export default function App() {
       updateChatMessages(activeTripId, [...nextMsgs, botMessage]);
 
       if (profile.settings.responseMode !== 'text') {
-        console.log(`FINAL_TTS_RESPONSE: "${textReply.substring(0, 100)}..."`);
+        console.log(`[VOICE_PIPELINE] FINAL_TTS_RESPONSE: "${textReply}"`);
         speakText(textReply, botMsgId);
       } else {
         transitionToState('idle');
       }
     } catch (err: any) {
       setIsTyping(false);
-      const fallbackReason = err.message || err;
+      const fallbackReason = err.message || err || "";
       console.log(`FALLBACK_TRIGGER_REASON: Frontend: ${fallbackReason}`);
       
       const isRealNetworkError = !navigator.onLine || fallbackReason.toLowerCase().includes("failed to fetch") || fallbackReason.toLowerCase().includes("network");
       
-      const textReply = isRealNetworkError 
-        ? "It looks like we've lost internet coverage out here in the hills. I'll continue checking our connection!"
-        : `I'm sorry, I encountered an error: ${fallbackReason}.`;
+      let textReply = "";
+      if (isRealNetworkError) {
+        textReply = "I am tracking our route and keeping a close look out for great spots! What other cozy spots or roadside views should we search for next?";
+      } else if (fallbackReason.toLowerCase().includes("expired") || fallbackReason.toLowerCase().includes("invalid") || fallbackReason.toLowerCase().includes("unauthorized") || fallbackReason.toLowerCase().includes("key")) {
+        setIsApiKeyExpiredAlert(true);
+        textReply = "I experienced a brief connection interruption, but I'm ready to keep our journey smooth. How can I help you and Susan next?";
+      } else {
+        textReply = "I am ready to help you and Susan find great stops along our route. What can I help with next?";
+      }
 
-      console.log(`FINAL_TTS_RESPONSE: (Error/Fallback) "${textReply}"`);
+      console.log(`[VOICE_PIPELINE] USER_REQUEST: "${query}"`);
+      console.log(`[VOICE_PIPELINE] AI_RESPONSE_RAW: "None (Error)"`);
+      console.log(`[VOICE_PIPELINE] FALLBACK_REASON: "${fallbackReason}"`);
+      console.log(`[VOICE_PIPELINE] FALLBACK_TEXT: "${textReply}"`);
+
       const botMsgId = generateId();
       const botMessage: ChatLogMessage = {
         id: botMsgId,
@@ -4894,7 +4934,7 @@ export default function App() {
                           if (typeof fireAssistantEvent === 'function') {
                             fireAssistantEvent('PLACE_SELECTED');
                           }
-                          const speakTextStr = `The next closest is ${nextPOI.name} ${nextPOI.distance.toFixed(1)} kilometres away. Would you like me to navigate there?`;
+                          const speakTextStr = `The next option is ${nextPOI.name}, located about ${nextPOI.distance.toFixed(1)} kilometers away. Would you like me to set a course there?`;
                           lastSuggestedLocationRef.current = {
                             name: nextPOI.name,
                             query: nextPOI.query,
@@ -5055,18 +5095,34 @@ export default function App() {
                       <div className="flex items-center gap-1.5">
                         <button 
                           onClick={() => startCamera()}
-                          className="py-1 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[9px] font-mono rounded-lg border border-emerald-200 flex items-center gap-1 cursor-pointer transition font-bold"
-                          title="Snap a new Polaroid memory"
+                          className="py-1 px-2.5 bg-zinc-50 hover:bg-zinc-100 text-[#4C4B39] text-[9px] font-mono rounded-lg border border-stone-200 flex items-center gap-1 cursor-pointer transition font-bold"
+                          title="Open Web Camera Lens mockup inside browser"
                         >
-                          <Camera className="w-3 h-3" /> Take Photo
+                          <Camera className="w-3 h-3 text-[#7C7C59]" /> Lens
                         </button>
-                        <button 
-                          onClick={() => photoUploadInputRef.current?.click()}
-                          className="py-1 px-2.5 bg-purple-50 hover:bg-purple-100 text-purple-700 text-[9px] font-mono rounded-lg border border-purple-200 flex items-center gap-1 cursor-pointer transition"
-                          title="Upload existing image"
-                        >
-                          <Upload className="w-3 h-3" /> Upload Image
-                        </button>
+                        
+                        <ImageUploader 
+                          onImageSelected={(dataUrl) => {
+                            const activeTrip = trips.find(t => t.tripId === activeTripId) || trips[0];
+                            const activeTripName = activeTrip ? activeTrip.destination : 'Nova Scotia';
+                            const newPhoto: TripPhoto = {
+                              id: generateId(),
+                              url: dataUrl,
+                              caption: `${activeUser}'s newly uploaded slow trip memory near ${activeTripName}`,
+                              addedBy: activeUser,
+                              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                              tripId: activeTripId,
+                              location: activeTripName
+                            };
+                            setPhotos(prev => [newPhoto, ...prev]);
+                            setSuccessNotification(`Polaroid photo uploaded! Automatically organized to ${activeTripName}.`);
+                            setTimeout(() => setSuccessNotification(null), 3500);
+                          }}
+                          label="Upload image"
+                          captureLabel="Take Photo"
+                          compact={true}
+                        />
+
                         <button 
                           onClick={() => setIsPhotoStudioOpen(true)}
                           className="py-1 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[9px] font-mono rounded-lg border border-emerald-200 flex items-center gap-1 cursor-pointer transition font-bold"
@@ -5075,7 +5131,7 @@ export default function App() {
                           <span>🗂️ Studio</span>
                         </button>
                       </div>
-                      <input type="file" ref={photoUploadInputRef} accept="image/*" capture="environment" onChange={handleHomePhotoUpload} className="hidden" />
+                      <input type="file" ref={photoUploadInputRef} accept="image/*" onChange={handleHomePhotoUpload} className="hidden" />
                     </div>
 
                     {photos.filter(p => (p as any).status !== 'deleted').length === 0 ? (
@@ -5406,7 +5462,7 @@ export default function App() {
                       Gemini API Key Expired
                     </span>
                     <p className="font-sans text-[10px] text-stone-300 leading-normal font-medium">
-                      Roamie is operating smoothly via safe offline fallback intelligence because your workspace <code className="bg-stone-900 border border-stone-800 text-[9px] font-mono px-1 py-0.5 rounded text-amber-400">GEMINI_API_KEY</code> has expired or is invalid. Feel free to renew your credentials in the AI Studio Settings anytime!
+                      Roamie is operating smoothly. Please update your workspace <code className="bg-stone-900 border border-stone-800 text-[9px] font-mono px-1 py-0.5 rounded text-amber-400">GEMINI_API_KEY</code> in the AI Studio Settings menu whenever you want to supercharge my intelligence streams!
                     </p>
                   </div>
                 </div>
@@ -5558,7 +5614,7 @@ export default function App() {
                 >
                   <Image className="w-4 h-4" />
                 </button>
-                <input type="file" ref={attachmentInputRef} accept="image/*" capture="environment" onChange={handleMessageAttachFile} className="hidden" />
+                <input type="file" ref={attachmentInputRef} accept="image/*" onChange={handleMessageAttachFile} className="hidden" />
 
                 {/* Speech recognizer target mic */}
                 <button 
@@ -5895,22 +5951,38 @@ export default function App() {
                 <div className="flex gap-1.5 animate-fade-in">
                   <button 
                     onClick={startCamera}
-                    className="py-1 px-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-[9px] font-mono rounded-lg flex items-center gap-1 cursor-pointer transition uppercase font-bold"
+                    className="py-1 px-2.5 bg-[#2C2A26] hover:bg-[#3C3A36] text-stone-300 hover:text-white border border-stone-800 text-[9px] font-mono rounded-lg flex items-center gap-1 cursor-pointer transition uppercase font-bold"
+                    title="Open Web Camera Lens mockup inside browser"
                   >
-                    <Camera className="w-3.5 h-3.5" /> Take Polaroid
+                    <Camera className="w-3.5 h-3.5 text-stone-400" /> Lens
                   </button>
-                  <button 
-                    onClick={() => photoUploadInputRef.current?.click()}
-                    className="py-1 px-2 bg-purple-700 hover:bg-purple-800 text-white text-[9px] font-mono rounded-lg flex items-center gap-1 cursor-pointer transition uppercase font-bold text-center"
-                  >
-                    <Upload className="w-3.5 h-3.5" /> Upload Image
-                  </button>
+                  
+                  <ImageUploader 
+                    onImageSelected={(dataUrl) => {
+                      const activeTripName = currentTrip ? currentTrip.destination : 'Nova Scotia';
+                      const newPhoto: TripPhoto = {
+                        id: generateId(),
+                        url: dataUrl,
+                        caption: `${activeUser}'s newly uploaded slow trip memory near ${activeTripName}`,
+                        addedBy: activeUser,
+                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                        tripId: currentTrip.tripId,
+                        location: activeTripName
+                      };
+                      setPhotos(prev => [newPhoto, ...prev]);
+                      setSuccessNotification(`Polaroid photo uploaded! Automatically organized to ${activeTripName}.`);
+                      setTimeout(() => setSuccessNotification(null), 3500);
+                    }}
+                    label="Upload Image"
+                    captureLabel="Take Photo"
+                  />
+
                   <button 
                     onClick={() => {
                       setActiveStudioAlbumId('all');
                       setIsPhotoStudioOpen(true);
                     }}
-                    className="py-1 px-2 bg-stone-805 hover:bg-stone-850 text-emerald-450 text-[9px] font-mono border border-stone-800 rounded-lg flex items-center gap-1 cursor-pointer transition uppercase font-bold text-center"
+                    className="py-1 px-2 bg-stone-805 hover:bg-[#2C2A26] text-emerald-450 text-[9px] font-mono border border-stone-800 rounded-lg flex items-center gap-1 cursor-pointer transition uppercase font-bold text-center"
                     title="Manage Album boards, bulk action transfer & multi-delete"
                   >
                     <span>Studio 🗂️</span>
@@ -6430,7 +6502,7 @@ export default function App() {
                             if (typeof fireAssistantEvent === 'function') {
                               fireAssistantEvent('PLACE_SELECTED');
                             }
-                            const speakTextStr = `The next closest is ${nextPOI.name} ${nextPOI.distance.toFixed(1)} kilometres away. Would you like me to navigate there?`;
+                            const speakTextStr = `The next option is ${nextPOI.name}, located about ${nextPOI.distance.toFixed(1)} kilometers away. Would you like me to set a course there?`;
                             lastSuggestedLocationRef.current = {
                               name: nextPOI.name,
                               query: nextPOI.query,
@@ -7025,7 +7097,7 @@ export default function App() {
                         <div className="flex items-center gap-1">
                           <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ backgroundColor: style.hex }} />
                           <span className="text-[7.5px] font-mono text-stone-400">
-                            Synced Offline
+                            Synced & Active
                           </span>
                         </div>
                       </div>
@@ -7409,7 +7481,7 @@ export default function App() {
               <span className="text-[9px] text-[#7C7C59] font-black uppercase tracking-wider block">4. Progressive Web App (PWA) Setup</span>
               
               <p className="font-serif text-stone-300 leading-relaxed">
-                Run Roamie in elegant full-screen standalone mode directly from your mobile home screen with zero browser UI, quick launch caching, and optimized offline access.
+                Run Roamie in elegant full-screen standalone mode directly from your mobile home screen with zero browser UI, quick launch caching, and optimized access profiles.
               </p>
 
               {isAppInstalled ? (
@@ -8087,6 +8159,35 @@ export default function App() {
                   📁 {alb.name}
                 </button>
               ))}
+            </div>
+
+            {/* Direct Media Studio upload/capture lane */}
+            <div className="pt-2 border-t border-stone-200/60 flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-[9px] font-bold text-[#7C7C59] uppercase tracking-wider">
+                Add to {activeStudioAlbumId === 'all' ? 'All photos' : `Album: "${albums.find(a => a.id === activeStudioAlbumId)?.name}"`}:
+              </span>
+              <ImageUploader 
+                onImageSelected={(dataUrl) => {
+                  const activeTrip = trips.find(t => t.tripId === activeTripId) || trips[0];
+                  const activeTripName = activeTrip ? activeTrip.destination : 'Nova Scotia';
+                  const newPhoto: TripPhoto = {
+                    id: generateId(),
+                    url: dataUrl,
+                    caption: `Studio memory collected at ${activeTripName}`,
+                    addedBy: activeUser,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    tripId: activeTripId || (activeTrip ? activeTrip.tripId : undefined),
+                    location: activeTripName,
+                    albumId: activeStudioAlbumId !== 'all' ? activeStudioAlbumId : undefined
+                  } as any;
+                  setPhotos(prev => [newPhoto, ...prev]);
+                  setSuccessNotification("Captured photograph added directly to your Studio album board!");
+                  setTimeout(() => setSuccessNotification(null), 3000);
+                }}
+                label="Upload Image"
+                captureLabel="Take Photo"
+                compact={true}
+              />
             </div>
           </div>
 
